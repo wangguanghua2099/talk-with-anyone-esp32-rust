@@ -1,0 +1,21 @@
+[target.xtensa-esp32s3-none-elf]
+# cargo run 会把固件 ELF 路径追加到 runner 后执行；
+# espflash 必须带 flash 子命令（4.x），--monitor 让烧录完直接看串口日志
+runner = "espflash flash --monitor"
+# esp-hal 官方示例的 xtensa 链接参数：链接脚本 + 不链接 C 启动文件
+# （缺少 -Tlinkall.x 会导致栈/中断向量/外设符号全部未定义）
+rustflags = [
+  "-C", "link-arg=-Wl,-Tlinkall.x",
+  "-C", "link-arg=-nostartfiles",
+  "-C", "force-frame-pointers",
+]
+
+[build]
+target = "xtensa-esp32s3-none-elf"
+
+[net]
+# git 依赖（esp-radio）走 ssh 命令行，复用系统 ssh 配置（443 端口）
+git-fetch-with-cli = true
+
+[unstable]
+build-std = ["core", "alloc"]

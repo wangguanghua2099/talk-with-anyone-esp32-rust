@@ -1,0 +1,29 @@
+[package]
+name = "talk-with-anyone-esp32"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# unstable：I2S DMA 流式缓冲（dma_*_stream_buffer!）等 API 需要
+# 注意：esp 系列全部用 .deps/esp-hal 的本地克隆（tag esp-hal-v1.2.0，commit dbd951f），
+# 因为 crates.io 上 esp-radio 没有配 esp-hal 1.2 的发布版；同系列必须同源，
+# 否则 links/类型冲突（esp-rom-sys、xtensa-lx-rt 等都带 links 键）。
+esp-hal = { path = ".deps/esp-hal/esp-hal", features = ["esp32s3", "unstable"] }
+esp-radio = { path = ".deps/esp-hal/esp-radio", features = ["esp32s3", "wifi"] }
+esp-rtos = { path = ".deps/esp-hal/esp-rtos", features = ["esp32s3", "esp-radio", "embassy"] }
+esp-alloc = { path = ".deps/esp-hal/esp-alloc", features = ["esp32s3"] }
+esp-println = { path = ".deps/esp-hal/esp-println", features = ["esp32s3"] }
+esp-bootloader-esp-idf = { path = ".deps/esp-hal/esp-bootloader-esp-idf", features = ["esp32s3"] }
+esp-backtrace = { path = ".deps/esp-hal/esp-backtrace", features = ["esp32s3", "panic-handler", "println"] }
+embassy-executor = "0.10.0"
+embassy-futures = "0.1.1"
+embassy-net = { version = "0.9.0", features = ["dhcpv4", "medium-ethernet", "tcp", "dns", "udp"] }
+embassy-time = "0.5.0"
+embassy-sync = "0.8.0"
+static_cell = "2"
+heapless = "0.9"
+libm = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
