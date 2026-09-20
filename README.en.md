@@ -263,9 +263,13 @@ the crime scene** — read the tail, including any `panicked at ...`.
 
 - [esp-hal](https://github.com/esp-rs/esp-hal) / [embassy](https://embassy.dev/)
   — the Rust embedded stack this port rides on
-- [LovyanGFX](https://github.com/lovyan03/LovyanGFX) and the
-  [efont](http://www.foundst.com/) project — the ST7789 setup and the `efont CN`
-  glyphs (check upstream licensing before redistributing a modified font blob)
+- [LovyanGFX](https://github.com/lovyan03/LovyanGFX) — the ST7789 panel setup and
+  the `efont CN` glyph arrays under
+  [`src/lgfx/Fonts/efont`](https://github.com/lovyan03/LovyanGFX/tree/master/src/lgfx/Fonts/efont),
+  which are themselves converted from the `/efont` Electronic Font Open
+  Laboratory fonts. The bundled 262 kB blob is derivative data: it carries the
+  upstream `/efont` (BSD-3-style) and LovyanGFX (FreeBSD) notices, reproduced
+  verbatim in [`licenses/`](licenses) — see [License](#license)
 - [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) — the hardware ecosystem
 - [talk-with-anyone](https://github.com/wangguanghua2099/talk-with-anyone) — the
   companion server, and
@@ -274,4 +278,8 @@ the crime scene** — read the tail, including any `panicked at ...`.
 
 ## License
 
-[MIT](LICENSE)
+Code: [MIT](LICENSE).
+
+The bitmap font blob [`src/fonts/efont_cn_14.bin`](src/fonts) is derivative data
+and keeps its upstream notices; both license texts are shipped verbatim under
+[`licenses/`](licenses). Details: [LICENSE-fonts.md](LICENSE-fonts.md).
