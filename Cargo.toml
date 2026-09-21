@@ -2,6 +2,7 @@
 name = "talk-with-anyone-esp32"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 # unstable：I2S DMA 流式缓冲（dma_*_stream_buffer!）等 API 需要
