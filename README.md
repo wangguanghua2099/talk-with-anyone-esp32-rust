@@ -27,7 +27,8 @@
 | WebSocket 客户端（`/ws/voice`，RFC6455，自动重连） | ✅ 实测 | 仅明文 `ws://`，见[已知限制](#已知限制) |
 | 流式字幕（打字机、折行、80 行滚动） | ✅ 实测 |
 | ST7789 240×240 驱动 + 中文点阵字库 + 局部重绘 | ✅ 实测 |
-| 顶栏 SNTP 时钟 / WiFi 信号柱 | ✅ 实测 | 电量固定 `--%`（ADC2 与 WiFi 冲突） |
+| 顶栏 SNTP 时钟 / WiFi 信号柱 | ✅ 实测 |
+| 顶栏电量（ADC2_CH6/GPIO17，30s 一采）+ 充电标志 | ✅ 实测 | S3 上 ADC2 与 WiFi 可共存；百分比量程待校准 |
 | 音量键 | ✅ 实时生效 / ⬜ 不持久化 | 缺 NVS 存储 |
 | `/ws/tts-stream` 兜底、语音打断（barge-in）、TLS | ⬜ 未实现 | |
 
@@ -101,6 +102,15 @@ espflash flash target/xtensa-esp32s3-none-elf/release/talk-with-anyone-esp32
 `LOAD segment with RWX permissions` 警告是嵌入式构建常态，可忽略。
 
 ### 5. 开聊
+
+**服务端要以 HTTP 模式启动，别用 HTTPS/WSS。** 后端 `main.py` 在自己的目录根下同时
+看到 `cert.pem` 和 `key.pem` 就会带 `ssl_certfile`/`ssl_keyfile` 起 uvicorn，于是
+浏览器能开、固件连不上 —— 本固件只说明文 `ws://`，TLS 握手第一步就对不上，串口表现为
+`[Voice] 连接失败: Io` 反复重连。要跑 HTTP，把这两个证书文件临时移出后端目录（放到
+任何子目录或其他位置都行，只要 `<后端目录>/cert.pem` 不再存在），聊完再放回去。
+服务端启动日志会说明它走了哪条路：出现 `[MAIN] 检测到 HTTPS 证书，以 https://<本机IP>:7862 启动`
+就是 HTTPS，没出现即 HTTP。这一条只约束 Rust 版；C++ 版走 `wss://`（不校验自签证书），
+连 HTTPS 起的后端是正常的。
 
 固件连上后会自动进入聆听。
 
@@ -189,6 +199,7 @@ ntp_task             ── 先等 IP，再做 SNTP
 [UI] 渲染层已接管屏幕（开机色带已清除）  ← 渲染层拿到面板所有权
 [WiFi] 已连接, IP: 192.168.1.23/24
 [NTP] 对时成功 120.25.115.20
+[电量] adc=3341 level=100 charging=0   ← 30s 一条；adc 是 12bit 原始值
 [Voice] 已连接 /ws/voice，已发送 session.start
 [ASR][t=10036] 你好呀。
 [Voice][t=10922] LLM 开始流式输出
@@ -208,7 +219,7 @@ ntp_task             ── 先等 IP，再做 SNTP
 | 说话没反应 | 说话时的 `[麦克风] 峰值=` | 应当超过 10000。接近 0 → PDM 接线或 `MIC_GAIN_SHIFT`；反复出现 `[AudioIn] 连续无数据` → 流式 DMA 溢出（驱动会自己重启通道） |
 | 回复卡顿/毛刺 | `[AudioOut] 已输出` 的增长速度 | 低于 ≈64 kB/s 说明泵被抽干了；查 `buffered()`、环容量、WiFi 信号 |
 | 时钟显示 `--:--` | `[NTP] 对时成功` | 路由器拦了出站 UDP 123，或 `NTP_SERVERS` 全不可达 |
-| `[Voice] 连接失败: Io` 一直刷 | 防火墙、服务端模式 | 客户端说的是明文 `ws://`；服务端请用 HTTP 模式并放行端口 |
+| `[Voice] 连接失败: Io` 一直刷 | 服务端是不是 HTTPS 起的，其次防火墙 | 客户端只说明文 `ws://`：后端目录根下还留着 `cert.pem`+`key.pem` 时，服务端会以 WSS 启动，握手第一步就连不上（处理办法见[开聊](#5-开聊)） |
 
 **任何一个任务 panic 都会带走整个界面**：esp-rtos 下所有 embassy 任务共用一个执行器线程，
 esp-backtrace 的 panic handler 打完就 `loop {}` 而不复位。于是屏幕冻在最后一帧上 ——
@@ -216,11 +227,17 @@ esp-backtrace 的 panic handler 打完就 `loop {}` 而不复位。于是屏幕�
 
 ## 已知限制
 
-- **没有 TLS。** 客户端只说 `ws://`；`wss://` 需要接一个 TLS 后端（C++ 版出于同样的
-  取舍跳过了自签证书校验）。
+- **没有 TLS。** 客户端只说 `ws://`，所以服务端必须以 HTTP 模式启动，见[开聊](#5-开聊)。
+  C++ 版相反，它走的是 `wss://`（`beginSSL(host, port, path, nullptr, nullptr)`：CA 与指纹
+  都不传 = 不校验自签证书），因此能直连 HTTPS 起的后端。Rust 侧缺的是 TLS 客户端本身。
 - **`SERVER_HOST` 只接受 IPv4 字面量**，还没有 DNS 客户端。
 - **音量不持久化** —— C++ 版用 NVS（`Preferences`）存，Rust 侧还缺 NVS 绑定。
-- **WiFi 运行时读不到电量**（ADC2/GPIO17 与射频冲突，C++ 版同样受限）→ 顶栏显示 `--%`。
+- **电量百分比的量程还没校准。** S3 上 ADC2 与 WiFi **可以共存**（"WiFi 开启后 ADC2
+  恒失败"是经典 ESP32 的限制，两版固件都实测能读），射频抢占的那一拍是无效值，用 5 次
+  采样取中位数兜住。但实测满电时 `adc=3341`，已远超沿用 C++ 卖家标定表的 100% 点
+  （2430），也就是现在这个 100% 是**表格上限饱和**的结果而非插值结果。放电一段时间后
+  对照串口 `[电量] adc=…`：若原始值长期停在 2430 以上，百分比就没有区分度了，需要按
+  多用电表实测重标 `battery.rs` 里的 `CAL` 表。
 - **`/ws/tts-stream` 兜底是空实现**：流式服务端一般都在主通道推音频，实际不会触发。
 - **没有语音打断**，打断请用 BOOT 键。
 - 依赖 git 克隆的 esp-hal（见[第 2 步](#2-拉取随附的-esp-hal)），等 `esp-radio`

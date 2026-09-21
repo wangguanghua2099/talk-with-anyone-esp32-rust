@@ -32,7 +32,8 @@ regression pass against the C++ build.
 | WebSocket client (`/ws/voice`, RFC6455, auto-reconnect) | ✅ verified | plaintext `ws://` only — see [Limitations](#known-limitations) |
 | Streaming subtitles (typewriter, wrap, 80-line scroll) | ✅ verified |
 | ST7789 240×240 driver + Chinese bitmap font + partial redraw | ✅ verified |
-| SNTP clock / Wi-Fi bars in the status bar | ✅ verified | battery shows `--%` (ADC2 conflicts with Wi-Fi) |
+| SNTP clock / Wi-Fi bars in the status bar | ✅ verified |
+| Battery level (ADC2_CH6/GPIO17, sampled every 30 s) + charging mark | ✅ verified | ADC2 coexists with Wi-Fi on the S3; the percentage scale is not calibrated yet |
 | Volume buttons | ✅ live, ⬜ not persisted | NVS storage still missing |
 | `/ws/tts-stream` fallback, voice barge-in, TLS | ⬜ not implemented | |
 
@@ -113,6 +114,17 @@ The linker's `LOAD segment with RWX permissions` warning is normal for
 embedded builds.
 
 ### 5. Talk
+
+**Start the server in HTTP mode, not HTTPS/WSS.** If `main.py` finds both
+`cert.pem` and `key.pem` in the server's own directory, it hands them to uvicorn as
+`ssl_certfile`/`ssl_keyfile`, so the browser works while the firmware does not: this
+client only speaks plaintext `ws://`, and the TLS handshake fails on the first step,
+which shows up as `[Voice] 连接失败: Io` reconnecting forever. To run HTTP, move those
+two certificate files out of the server directory temporarily (anywhere is fine — the
+test is whether `<server-dir>/cert.pem` exists), then put them back. The server's own
+startup line `[MAIN] 检测到 HTTPS 证书，以 https://<本机IP>:7862 启动` is the tell; if
+it is absent, you are on HTTP. This constraint is Rust-only — the C++ build speaks
+`wss://` (self-signed, validation skipped) and joins an HTTPS-started server happily.
 
 The firmware connects and starts listening on its own.
 
@@ -217,6 +229,7 @@ Every milestone is logged at 115200 baud (expect this shape on a healthy boot):
 [UI] 渲染层已接管屏幕（开机色带已清除）  ← the renderer owns the panel
 [WiFi] 已连接, IP: 192.168.1.23/24
 [NTP] 对时成功 120.25.115.20
+[电量] adc=3341 level=100 charging=0   ← one line every 30 s; `adc` is the raw 12-bit value
 [Voice] 已连接 /ws/voice，已发送 session.start
 [ASR][t=10036] 你好呀。
 [Voice][t=10922] LLM 开始流式输出
@@ -237,7 +250,7 @@ two firmwares can be compared line by line.
 | No response to speech | `[麦克风] 峰值=` while talking | Should exceed 10000. Near 0 → PDM wiring or `MIC_GAIN_SHIFT`; repeated `[AudioIn] 连续无数据` → stream DMA underrun (driver restarts it) |
 | Stutter / hissy gaps in replies | Growth of `[AudioOut] 已输出` | Below ≈64 kB/s means the pump is starved; check `buffered()`, ring size, Wi-Fi signal |
 | Clock shows `--:--` | `[NTP] 对时成功` | Router blocks outbound UDP 123, or all `NTP_SERVERS` unreachable |
-| `[Voice] 连接失败: Io` forever | Firewall, server mode | The client speaks plaintext `ws://`; run the server in HTTP mode, and allow the port |
+| `[Voice] 连接失败: Io` forever | Whether the server came up as HTTPS, then the firewall | The client speaks plaintext `ws://`: with `cert.pem`+`key.pem` still sitting in the server directory it starts as WSS, so the handshake fails on step one (see [Talk](#5-talk) for the workaround) |
 
 A panic in **any** task takes the whole UI down: esp-rtos gives all embassy tasks
 one executor thread, and esp-backtrace's handler prints and then spins instead of
@@ -246,13 +259,25 @@ the crime scene** — read the tail, including any `panicked at ...`.
 
 ## Known limitations
 
-- **No TLS.** The client speaks `ws://`; `wss://` would need a TLS backend
-  (the C++ build skips certificate validation for the same reason).
+- **No TLS.** The client speaks `ws://` only, so the server has to run in HTTP
+  mode — see [Talk](#5-talk). The C++ build is the opposite: it uses `wss://` via
+  `beginSSL(host, port, path, nullptr, nullptr)`, i.e. neither CA nor fingerprint
+  is supplied, so a self-signed certificate is accepted without validation and an
+  HTTPS-started server works fine there. What the Rust side lacks is the TLS client
+  itself, not the decision to skip certificate checks.
 - **IPv4 literals only** for `SERVER_HOST`; no DNS client yet.
 - **Volume is not persisted** — the C++ build stores it in NVS
   (`Preferences`), the Rust side still needs an NVS binding.
-- **Battery level unavailable while Wi-Fi runs** (ADC2/GPIO17 conflicts with the
-  radio on this chip, same as in the C++ build) — the status bar shows `--%`.
+- **The battery percentage scale is not calibrated yet.** ADC2 and Wi-Fi
+  **coexist** on the S3 (the "ADC2 always times out once Wi-Fi is up" rule is a
+  classic-ESP32 thing; both firmwares do read the pin), and the one sample a radio
+  pre-emption lands on is invalid — that is covered by taking the median of 5 reads.
+  But the measured full-charge reading is `adc=3341`, far above the 100% point of the
+  seller-calibrated table inherited from the C++ build (2430), so today's 100% is a
+  **clipped top of range**, not an interpolated value. Watch `[电量] adc=…` on the
+  serial port as the battery drains: while the raw value stays above 2430 the
+  percentage has no resolution, and `CAL` in `battery.rs` should be re-calibrated
+  against a multimeter.
 - **The `/ws/tts-stream` fallback is a stub**: the streaming server normally
   pushes audio on the main channel, so it never triggers in practice.
 - **No voice barge-in**; interrupt with the BOOT button.
