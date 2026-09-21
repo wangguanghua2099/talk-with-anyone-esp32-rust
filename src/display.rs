@@ -84,6 +84,10 @@ pub struct Display {
     last_type_ms: u32,
     /// 顶栏音量临时条的显示截止时刻（ms，0=不显示；对应 C++ s_volShowUntil）
     volume_until_ms: u32,
+    /// 顶栏电量百分比（None=还没读到过有效采样，显示 --%；对应 C++ s_battLevel<0）
+    batt_level: Option<u8>,
+    /// 充电中（顶栏画小闪电；对应 C++ s_battCharging）
+    batt_charging: bool,
 }
 
 impl Display {
@@ -99,6 +103,8 @@ impl Display {
             stream_queued: String::new(),
             last_type_ms: 0,
             volume_until_ms: 0,
+            batt_level: None,
+            batt_charging: false,
         }
     }
 
@@ -130,6 +136,20 @@ impl Display {
 
     pub fn volume(&self) -> i32 {
         self.volume
+    }
+
+    /// 顶栏电量与充电标志（由主循环按 BAT_POLL_MS 节拍从 battery.rs 刷进来）
+    pub fn set_battery(&mut self, level: Option<u8>, charging: bool) {
+        self.batt_level = level;
+        self.batt_charging = charging;
+    }
+
+    pub fn batt_level(&self) -> Option<u8> {
+        self.batt_level
+    }
+
+    pub fn batt_charging(&self) -> bool {
+        self.batt_charging
     }
 
     // ---------- 字幕 API（与 C++ display_ui.cpp 一一对应） ----------

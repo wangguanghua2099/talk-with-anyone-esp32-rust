@@ -39,6 +39,8 @@ pub const DISPLAY_BACKLIGHT: u8 = 13;
 // ===== 电源 =====
 /// 充电检测引脚：高电平=充电中（电池电压走 ADC2_CH6 = GPIO17）
 pub const PIN_BAT_CHG: u8 = 38;
+/// 电量采样节拍（对应 C++ pollBattery 的 30s 一测；ADC 读取会短暂阻塞主循环，勿调快）
+pub const BAT_POLL_MS: u32 = 30_000;
 
 // ===== 音质处理（对应 C++ audio_out.cpp）=====
 /// 输出预增益：音量50%≈原来100%的响度

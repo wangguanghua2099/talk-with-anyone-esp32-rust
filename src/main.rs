@@ -44,6 +44,7 @@ use esp_println::println;
 
 mod audio_input;
 mod audio_output;
+mod battery;
 mod config;
 mod config_private;
 mod display;
@@ -56,6 +57,7 @@ mod ws;
 
 use audio_input::AudioInput;
 use audio_output::AudioOutput;
+use battery::Battery;
 use display::{Display, DisplayState};
 use embassy_time::Timer;
 use esp_hal::gpio::{Level, Output, OutputConfig};
@@ -213,6 +215,13 @@ async fn main(spawner: Spawner) -> ! {
     let btn_volup = Input::new(peripherals.GPIO39, InputConfig::default().with_pull(Pull::Up));
     let btn_voldn = Input::new(peripherals.GPIO40, InputConfig::default().with_pull(Pull::Up));
 
+    // ---- 电量：电池电压走 ADC2_CH6=GPIO17，充电检测 GPIO38 无上下拉（C++ pinMode(INPUT)）----
+    let battery = Battery::new(
+        peripherals.ADC2,
+        peripherals.GPIO17,
+        Input::new(peripherals.GPIO38, InputConfig::default()),
+    );
+
     // ---- WiFi + 网络栈 ----
     let station_config = esp_radio::wifi::Config::Station(
         esp_radio::wifi::sta::StationConfig::default()
@@ -300,6 +309,7 @@ async fn main(spawner: Spawner) -> ! {
         btn_talk,
         btn_volup,
         btn_voldn,
+        battery,
         &mut screen,
         &mut renderer,
     )
@@ -316,6 +326,7 @@ async fn app_loop(
     btn_talk: Input<'static>,
     btn_volup: Input<'static>,
     btn_voldn: Input<'static>,
+    mut battery: Battery<'static>,
     screen: &mut Screen,
     renderer: &mut Renderer,
 ) -> ! {
@@ -341,6 +352,9 @@ async fn app_loop(
         let pumped = audio.lock().await.borrow_mut().tick();
         let ws_up = WS_UP.load(Ordering::Relaxed);
 
+        // 电量：30s 一采（内部有自旋上限，最坏几毫秒，麦克风流缓冲余量 >500ms）
+        battery.tick(now);
+
         // 打字机推进 + 字幕/顶栏局部重绘（屏幕只由主循环持有，无需加锁）
         {
             let d = display.lock().await;
@@ -359,6 +373,7 @@ async fn app_loop(
                 d.borrow_mut().set_state(shown);
             }
             d.borrow_mut().tick(now);
+            d.borrow_mut().set_battery(battery.level(), battery.charging());
             renderer.tick(&d.borrow(), screen, now);
         }
 

@@ -239,9 +239,16 @@ impl Renderer {
             fill_rect(band, SCREEN_W, 190, 10, 3, 5, wc);
             fill_rect(band, SCREEN_W, 195, 7, 3, 8, wc);
             fill_rect(band, SCREEN_W, 200, 4, 3, 11, wc);
-            // 电量：ADC2 与 WiFi 冲突，与 C++ 同状态显示 "--%"
-            let bw = font::text_width("--%");
-            raster(band, SCREEN_W, "--%", 0xFFFF, 237 - bw);
+            // 电量百分比（右对齐），充电中且未满时左侧画小闪电（对应 C++ drawTopBar）
+            let bt = batt_text(disp.batt_level());
+            let bw = font::text_width(&bt);
+            raster(band, SCREEN_W, &bt, 0xFFFF, 237 - bw);
+            if disp.batt_charging() {
+                let bx = 237 - bw - 8;
+                draw_line(band, SCREEN_W, bx + 2, 3, bx, 8, 0xFFE0);
+                draw_line(band, SCREEN_W, bx, 8, bx + 3, 8, 0xFFE0);
+                draw_line(band, SCREEN_W, bx + 3, 8, bx + 1, 13, 0xFFE0);
+            }
         }
         if !screen.push_band(0, 0, SCREEN_W as u16, BAR_H as u16, band) {
             return false;
@@ -254,6 +261,7 @@ impl Renderer {
 
 /// 顶栏内容键：任何会改变顶栏像素的状态都编进这一个 u64。
 /// 位分配：状态字 3 | 音量临时条显示中 1 | 音量 7 | 分钟数(0..1439) 11 | 未同步 1
+/// | 电量 7（未读到=127）| 充电 1
 fn bar_key(disp: &Display, now_ms: u32) -> u64 {
     let state = match disp.state() {
         DisplayState::Idle => 0u64,
@@ -264,12 +272,13 @@ fn bar_key(disp: &Display, now_ms: u32) -> u64 {
     let vol_shown = show_volume(disp, now_ms);
     let mut k = state | (if vol_shown { 1 << 3 } else { 0 }) | ((disp.volume() as u64 & 0x7F) << 4);
     if vol_shown {
-        return k; // 音量条期间时间/信号柱不显示，不必掺入分钟数
+        return k; // 音量条期间时间/信号柱/电量都不显示，不必掺进来
     }
     match crate::ntp::clock_hm(now_ms) {
         Some((h, m)) => k |= (((h * 60 + m) as u64) & 0x7FF) << 11,
         None => k |= 1 << 22, // 未同步
     }
+    k |= (disp.batt_level().map_or(127u64, |v| v as u64) << 24) | ((disp.batt_charging() as u64) << 31);
     k
 }
 
@@ -283,6 +292,19 @@ fn format_vol(v: i32) -> String {
     use core::fmt::Write;
     let mut s = String::from("VOL ");
     let _ = write!(s, "{}%", v);
+    s
+}
+
+/// 顶栏电量文字（None = 还没采样到，与 C++ s_battLevel<0 的 "--%" 一致）
+fn batt_text(level: Option<u8>) -> String {
+    use core::fmt::Write;
+    let mut s = String::new();
+    match level {
+        Some(v) => {
+            let _ = write!(s, "{}%", v);
+        }
+        None => s.push_str("--%"),
+    }
     s
 }
 
@@ -361,6 +383,30 @@ fn fill_rect(band: &mut [u8], stride: usize, x: i32, y: i32, rw: i32, rh: i32, c
     for yy in y..y + rh {
         for xx in x..x + rw {
             put(band, stride, xx, yy, c);
+        }
+    }
+}
+
+/// Bresenham 直线：只给顶栏充电小闪电那三段 3~11px 的折线用（C++ 侧是 drawLine）
+fn draw_line(band: &mut [u8], stride: usize, x0: i32, y0: i32, x1: i32, y1: i32, c: u16) {
+    let (dx, dy) = ((x1 - x0).abs(), (y1 - y0).abs());
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let (mut x, mut y) = (x0, y0);
+    let mut err = dx - dy;
+    loop {
+        put(band, stride, x, y, c);
+        if x == x1 && y == y1 {
+            return;
+        }
+        let e2 = 2 * err;
+        if e2 > -dy {
+            err -= dy;
+            x += sx;
+        }
+        if e2 < dx {
+            err += dx;
+            y += sy;
         }
     }
 }
