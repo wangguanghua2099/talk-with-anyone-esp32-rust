@@ -71,7 +71,9 @@ cargo install espflash --locked   # 4.x
 
 `Cargo.toml` builds against a local clone of esp-hal rather than crates.io,
 because no published `esp-radio` release matches esp-hal 1.2 (mixing the two
-sources breaks `links` keys such as `esp-rom-sys` / `xtensa-lx-rt`):
+sources breaks `links` keys such as `esp-rom-sys` / `xtensa-lx-rt`). This only
+applies to the esp-hal family — the font decoder `lovyangfx-fonts` comes from
+crates.io as usual and `cargo build` fetches it automatically. Clone first:
 
 ```bash
 git clone --branch esp-hal-v1.2.0 --depth 1 https://github.com/esp-rs/esp-hal .deps/esp-hal
@@ -159,7 +161,8 @@ ntp_task             ── waits for an address, then SNTP
 | [`display.rs`](src/display.rs) | Subtitle model: typewriter, wrapping, history, status |
 | [`render.rs`](src/render.rs) | Row-diff partial redraw of subtitles + status bar |
 | [`screen.rs`](src/screen.rs) | ST7789 init sequence, pixel streaming, self-test |
-| [`font.rs`](src/font.rs) | u8g2-format `efont CN` 14 px glyph decoder |
+| [`font.rs`](src/font.rs) | Loads the font blob and exposes the `text_width` / `for_each_pixel` wrappers; decoding lives in the [`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts) crate |
+| [`battery.rs`](src/battery.rs) | ADC2_CH6 battery voltage sampling (median + spin cap), charge detection, raw value → percentage |
 | [`ntp.rs`](src/ntp.rs) | 48-byte SNTP client, no extra dependencies |
 
 ## Design notes
@@ -211,11 +214,28 @@ before editing:
   address first, a slow router turns the self-test pattern into what looks like a
   dead device. Likewise a single SPI write error must not latch the panel off
   forever — `Renderer` re-inits it every 2 s and the takeover is logged.
-- **Font data** is a 262 kB u8g2-format blob (`src/fonts/efont_cn_14.bin`)
-  extracted from LovyanGFX's `lgfx_efont_cn.c`, decoded bit-by-bit with an RLE
-  glyph parser. `include_bytes!` keeps it in flash; a scan of 23 952 code points
-  is covered by an offline host-side harness (`render.rs`/`display.rs`/`font.rs`
-  depend on nothing but the blob, so a stub `Screen` lets them run on a PC).
+- **Font data** is a 262 kB u8g2-format blob (`src/fonts/efont_cn_14.bin`),
+  extracted from LovyanGFX's `lgfx_efont_cn.c` with `lgyf-gen` and kept in
+  flash via `include_bytes!`. The bit-by-bit RLE decoder has been factored out
+  into its own crate, [`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts)
+  (`default-features = false`: decoder only, without the `gen` half's C-literal
+  parser, so the device build pulls in no `alloc`). `font.rs` in this repo is
+  down to "load the blob + two free functions", so `render.rs` / `display.rs`
+  still depend on nothing but the blob and a stub `Screen` runs the whole
+  rendering pipeline on a PC.
+- **A missing glyph must never crash the device.** Subtitle text comes from the
+  server-side LLM, so emoji are not rare — and the old in-tree font code walked
+  off the end of the unicode LUT for code points above 0xFFFF and panicked out
+  of bounds; one task panic takes the whole UI down (see
+  [Troubleshooting](#troubleshooting)): the screen freezes on the last frame,
+  the serial log stops on the last line. The crate's decoder has two hard
+  guarantees (no panics, a bound on every scanning loop), so such code points
+  degrade to "advance by `max_width`, draw nothing". Both decoders were diffed
+  pixel-by-pixel on a PC during the swap: 1878 widths and 15028 glyph groups
+  totalling 264169 pixel points all identical — the only differences are the
+  samples where the old code panicked out of bounds and the new one returns
+  normally (non-BMP characters like `🎵`; in-BMP gaps such as `⚡`/`★` behaved
+  identically in both versions already).
 
 ## Serial log
 
@@ -295,6 +315,9 @@ the crime scene** — read the tail, including any `panicked at ...`.
   Laboratory fonts. The bundled 262 kB blob is derivative data: it carries the
   upstream `/efont` (BSD-3-style) and LovyanGFX (FreeBSD) notices, reproduced
   verbatim in [`licenses/`](licenses) — see [License](#license)
+- [lovyangfx-fonts](https://github.com/wangguanghua2099/lovyangfx-fonts-rs) — a
+  `no_std` decoder for u8g2 / LovyanGFX bitmap fonts plus the blob extraction
+  tooling, factored out of this firmware's earlier `src/font.rs`
 - [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) — the hardware ecosystem
 - [talk-with-anyone](https://github.com/wangguanghua2099/talk-with-anyone) — the
   companion server, and
@@ -303,7 +326,9 @@ the crime scene** — read the tail, including any `panicked at ...`.
 
 ## License
 
-Code: [MIT](LICENSE).
+Code: [MIT](LICENSE). The glyph decoder is provided by the dependency
+[`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts) (MIT, shipping its
+own upstream notices).
 
 The bitmap font blob [`src/fonts/efont_cn_14.bin`](src/fonts) is derivative data
 and keeps its upstream notices; both license texts are shipped verbatim under

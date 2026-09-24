@@ -1306,6 +1306,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lovyangfx-fonts"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aeef9b077e24eb13fa7295e156edb4a6339b66fca16f3c5853145040bb3c9c"
+
+[[package]]
 name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1798,6 +1804,7 @@ dependencies = [
  "esp-rtos",
  "heapless 0.9.3",
  "libm",
+ "lovyangfx-fonts",
  "static_cell",
 ]
 

@@ -1,11 +1,14 @@
 # Font data notices / 字库数据版权声明
 
-本仓库的**代码**按 [MIT](LICENSE) 授权。
+本仓库的**代码**按 [MIT](LICENSE) 授权。点阵的解码器与 blob 抽取工具同样不放在本仓库，
+它们以依赖形式引入：[`lovyangfx-fonts`](https://github.com/wangguanghua2099/lovyangfx-fonts-rs)
+（MIT，包内自带上游 NOTICE 与 `licenses/`）。本仓库只带生成出来的 blob。
 
 `src/fonts/efont_cn_14.bin` 是**衍生数据**，不是本仓库的原创作品：它由
 [LovyanGFX](https://github.com/lovyan03/LovyanGFX) 的
 `src/lgfx/Fonts/efont/lgfx_efont_cn.c` 中 `lgfx_efont_cn_14[]` 数组（u8g2 点阵格式）
-提取成纯二进制 blob。因此它同时带有两层上游声明：
+经 [`lovyangfx-fonts`](https://github.com/wangguanghua2099/lovyangfx-fonts-rs) 的
+`lgyf-gen` 提取成纯二进制 blob。因此它同时带有两层上游声明：
 
 | 层 | 权利人的声明 | 许可 |
 |----|--------------|------|
@@ -28,5 +31,7 @@
 ## 一句话结论
 
 代码可以按 MIT 发布；字库 blob **不需要**改成 MIT，也**不能**宣称是本项目的 MIT 作品 ——
-保留上游声明随包分发即为合规。若你只需要一个不带中文点阵的纯工具链（转换器 + 运行时），
-把 blob 换成"由使用者自备上游字体源"的模式，就完全不涉及数据分发问题。
+保留上游声明随包分发即为合规。不带中文点阵的纯工具链（转换器 + 运行时）模式已经落地：
+就是依赖里的 [`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts) crate，它把
+blob 换成"由使用者自备上游字体源"，因此 crate 本身完全不涉及数据分发问题；本仓库只承担
+生成出的 blob 及其上游声明。
