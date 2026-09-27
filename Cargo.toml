@@ -21,10 +21,12 @@ embassy-futures = "0.1.1"
 embassy-net = { version = "0.9.0", features = ["dhcpv4", "medium-ethernet", "tcp", "dns", "udp"] }
 embassy-time = "0.5.0"
 embassy-sync = "0.8.0"
-# u8g2 / LovyanGFX 点阵字库解码器（原 src/font.rs 抽成的独立 crate）。
+# u8g2 / LovyanGFX 点阵字库：解码器 + 捆绑数据（原 src/font.rs 抽成的 crate 家族）。
 # default-features = false：关掉 `gen`（C 字面量解析 + blob 抽取，会拉进 alloc），
-# 设备侧只需要解码器，这样整个 crate 不分配堆。
-lovyangfx-fonts = { version = "0.1", default-features = false }
+# 设备侧不引入 alloc。efont-cn-14 特性经主 crate 0.2 的 fonts 模块桥接独立的纯数据包
+# lovyangfx-fonts-efont-cn（blob 与 LovyanGFX 上游数组逐字节一致，上游声明随包分发），
+# 本仓库不再自带 blob。
+lovyangfx-fonts = { version = "0.2", default-features = false, features = ["efont-cn-14"] }
 static_cell = "2"
 heapless = "0.9"
 libm = "0.2"

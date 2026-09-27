@@ -1,28 +1,21 @@
-// font.rs —— 字库解码交给 lovyangfx-fonts，这里只留"blob 从哪来"和两个薄封装
+// font.rs —— 字库的解码与数据全部来自 crates.io，这里只留两个薄封装
 //
-// 解码器本体（u8g2 线格式、RLE 游程、基线对齐、坏 blob 不 panic 不死循环）已抽成
-// 独立 crate：https://crates.io/crates/lovyangfx-fonts （仓库 lovyanfx-fonts-rs，
-// 那边带 PC 侧回归测试）。
-//
-// 字形数据不在 crate 里：本仓库继续自带 `src/fonts/efont_cn_14.bin`（262 kB），
-// 它由该 crate 的 `lgyf-gen` 从各人自己的 LovyanGFX 检出里抽出，上游版权声明见
-// LICENSE-fonts.md。
+// 解码器：https://crates.io/crates/lovyangfx-fonts （仓库 lovyangfx-fonts-rs，
+// 带 PC 侧回归测试）；14px 中文点阵数据：https://crates.io/crates/lovyangfx-fonts-efont-cn
+// （纯数据包，blob 与 LovyanGFX 上游数组逐字节一致，/efont 与 LovyanGFX 声明随包）。
+// 主 crate 0.2 的 `fonts` 模块经 optional 依赖桥接数据包，固件只开一个 feature
+// 就拿到句柄——本仓库不再自带 blob（历史上是 `lgyf-gen` 抽出后随仓库分发的）。
 //
 // 保留 `font::text_width` / `font::for_each_pixel` 这两个自由函数的意义：
-// display.rs 与 render.rs 因此不必随身携带 `Font` 句柄，也就保持"除了这个 blob
-// 谁都不依赖"，能脱离硬件在 PC 上离线跑回归。`Font::new` 只解析 23 字节头（十几次
-// 带边界检查的取字节），相对一次字形扫描可以忽略，所以每次调用现取句柄，不引入
-// static 可变性 / OnceLock 这类额外 machinery。
+// display.rs 与 render.rs 因此不必随身携带 `Font` 句柄，也就保持"除了字库谁都不
+// 依赖"，能脱离硬件在 PC 上离线跑回归。`Font::new` 只解析 23 字节头（十几次带边界
+// 检查的取字节），相对一次字形扫描可以忽略，所以每次调用现取句柄，不引入 static
+// 可变性 / OnceLock 这类额外 machinery。
 
-use lovyangfx_fonts::Font;
-
-/// efont CN 14px 点阵 blob，编译期进固件（8MB Flash 无压力）
-static FONT: &[u8] = include_bytes!("fonts/efont_cn_14.bin");
-
-/// 句柄即取即用：`Font` 只含头部字段与 blob 引用（`Copy`，无堆无锁）
-fn font() -> Font<'static> {
-    // blob 随固件一起编译进来、长度固定，读不满头部这件事在编译期就不成立
-    Font::new(FONT).expect("字库 blob 短于 23 字节头")
+/// 14px 常规 eFont CN 的零拷贝句柄（`Font` 只含头部字段与 blob 引用，`Copy`，无堆无锁）。
+/// 数据随固件编译进 Flash，短于 23 字节头这件事在编译期就不成立，数据包测试另有金标准覆盖。
+fn font() -> lovyangfx_fonts::Font<'static> {
+    lovyangfx_fonts::fonts::efont_cn_14()
 }
 
 /// 量取字符串宽度（像素）。缺字形按 `max_width()` 兜底（与 LovyanGFX 一致）。

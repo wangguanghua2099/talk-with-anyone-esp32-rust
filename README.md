@@ -145,7 +145,7 @@ ntp_task             ── 先等 IP，再做 SNTP
 | [`display.rs`](src/display.rs) | 字幕数据模型：打字机、折行、历史、状态 |
 | [`render.rs`](src/render.rs) | 字幕 + 顶栏的行级 diff 局部重绘 |
 | [`screen.rs`](src/screen.rs) | ST7789 初始化序列、像素流推送、开机自检 |
-| [`font.rs`](src/font.rs) | 装载字库 blob + `text_width` / `for_each_pixel` 两个薄封装；解码在 [`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts) crate 里 |
+| [`font.rs`](src/font.rs) | 取字库句柄 + `text_width` / `for_each_pixel` 两个薄封装；解码与 14px 中文数据都在 [`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts) 0.2 家族 crate 里 |
 | [`battery.rs`](src/battery.rs) | ADC2_CH6 电池电压采样（中位数 + 自旋上限）、充电检测、原始值→百分比 |
 | [`ntp.rs`](src/ntp.rs) | 48 字节 SNTP 客户端，不引额外依赖 |
 
@@ -184,12 +184,14 @@ ntp_task             ── 先等 IP，再做 SNTP
 - **屏幕绝不能依赖网络。** 渲染层在开机约 0.8s 后接管面板，**早于 DHCP 完成**；
   一旦主任务先等地址，路由器慢一点，自检色带就变成"看起来像死机"。同理，一次 SPI 写失败
   不能把面板永久判死 —— `Renderer` 每 2 秒重发一次初始化，接管动作本身也有日志。
-- **字库**是 262 kB 的 u8g2 格式 blob（`src/fonts/efont_cn_14.bin`），用 `lgyf-gen`
-  从 LovyanGFX 的 `lgfx_efont_cn.c` 里抽出来，`include_bytes!` 让它留在 Flash。逐位 RLE
-  解码器也已抽成独立 crate [`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts)
-  （`default-features = false`：只要解码，不连 `gen` 那半的 C 字面量解析一起拉进来，设备侧
-  因此不引入 `alloc`）。本仓库的 `font.rs` 只剩"取 blob + 两个自由函数"，`render.rs` /
-  `display.rs` 于是仍然除 blob 外不依赖任何硬件，用一个替身 `Screen` 就能在 PC 上跑完整渲染。
+- **字库**整体来自 crates.io：解码器 [`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts)
+  0.2（`default-features = false`：只要解码，不连 `gen` 那半的 C 字面量解析一起拉进来，设备侧
+  因此不引入 `alloc`）+ 数据包 [`lovyangfx-fonts-efont-cn`](https://crates.io/crates/lovyangfx-fonts-efont-cn)
+  0.2（纯数据、零依赖，efont_cn_14 blob 与 LovyanGFX 上游数组逐字节一致）。本仓库只开一个
+  `efont-cn-14` 特性，`font.rs` 只剩"取句柄 + 两个自由函数"，`render.rs` / `display.rs`
+  仍然除字库外不依赖任何硬件，用一个替身 `Screen` 就能在 PC 上跑完整渲染。
+  （历史：blob 原先由 `lgyf-gen` 从 LovyanGFX 的 `lgfx_efont_cn.c` 抽出、随本仓库分发，
+  0.2 起改由数据包提供，仓库瘦身 262 kB。）
 - **缺字形不许崩到设备上。** 字幕文本是服务端 LLM 生成的，出现 emoji 并不罕见，而旧的字库
   代码在码位 > 0xFFFF 时会在 unicode LUT 里走出表尾并索引越界 panic —— 一个任务 panic 就带走
   整个界面（见[排障](#排障)）：屏幕冻在最后一帧，串口停在最后一行。crate 的解码器有两条硬性
@@ -261,11 +263,12 @@ esp-backtrace 的 panic handler 打完就 `loop {}` 而不复位。于是屏幕�
 - [LovyanGFX](https://github.com/lovyan03/LovyanGFX) —— ST7789 面板配置，以及
   [`src/lgfx/Fonts/efont`](https://github.com/lovyan03/LovyanGFX/tree/master/src/lgfx/Fonts/efont)
   下的 `efont CN` 点阵数组；这些数组本身由 `/efont`（Electronic Font Open Laboratory）
-  字体转换而来。随附的 262 kB blob 属于衍生数据，带有 `/efont`（BSD-3 风格）与
+  字体转换而来。编进固件的字库数据属于衍生数据，带有 `/efont`（BSD-3 风格）与
   LovyanGFX（FreeBSD）两份上游声明，原文见 [`licenses/`](licenses)
 - [lovyangfx-fonts](https://github.com/wangguanghua2099/lovyangfx-fonts-rs) —— u8g2 /
   LovyanGFX 点阵的 `no_std` 解码器与 blob 抽取工具，由本固件早先的 `src/font.rs` 抽出成
-  独立 crate
+  独立 crate；0.2 起连同 14px 中文数据（[`lovyangfx-fonts-efont-cn`](https://crates.io/crates/lovyangfx-fonts-efont-cn)）
+  一起经 crates.io 依赖引入，本仓库不再自带 blob
 - [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) —— 硬件生态来源
 - [talk-with-anyone](https://github.com/wangguanghua2099/talk-with-anyone) —— 配套服务端；
   [talk-with-anyone-esp32](https://github.com/wangguanghua2099/talk-with-anyone-esp32)
@@ -273,9 +276,10 @@ esp-backtrace 的 panic handler 打完就 `loop {}` 而不复位。于是屏幕�
 
 ## 许可
 
-代码：[MIT](LICENSE)。点阵解码器由依赖
-[`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts)（MIT，自带上游声明）提供。
+代码：[MIT](LICENSE)。点阵解码器与 14px 中文数据由依赖
+[`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts) +
+[`lovyangfx-fonts-efont-cn`](https://crates.io/crates/lovyangfx-fonts-efont-cn)
+（解码器 MIT；数据属衍生、保留上游声明，两份原文随数据包分发）提供。
 
-中文点阵 blob [`src/fonts/efont_cn_14.bin`](src/fonts) 属衍生数据，保留上游声明，
-两份许可原文随包放在 [`licenses/`](licenses)，分层说明见
-[LICENSE-fonts.md](LICENSE-fonts.md)。
+固件二进制里编入的字库数据仍是衍生数据：自行分发固件时，须按上游要求随附两份声明，
+本仓库 [`licenses/`](licenses) 与分层说明 [LICENSE-fonts.md](LICENSE-fonts.md) 可直接取用。

@@ -1307,9 +1307,18 @@ dependencies = [
 
 [[package]]
 name = "lovyangfx-fonts"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34aeef9b077e24eb13fa7295e156edb4a6339b66fca16f3c5853145040bb3c9c"
+checksum = "ccd9a56b827df5c12a19ab3ec7e2e74881b110adbb01417467970bcdf9f413c5"
+dependencies = [
+ "lovyangfx-fonts-efont-cn",
+]
+
+[[package]]
+name = "lovyangfx-fonts-efont-cn"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4290e96295e3a446f3679da73acce01efb2c13acc51df5e72190408975865d07"
 
 [[package]]
 name = "managed"

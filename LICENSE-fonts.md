@@ -1,14 +1,18 @@
 # Font data notices / 字库数据版权声明
 
-本仓库的**代码**按 [MIT](LICENSE) 授权。点阵的解码器与 blob 抽取工具同样不放在本仓库，
-它们以依赖形式引入：[`lovyangfx-fonts`](https://github.com/wangguanghua2099/lovyangfx-fonts-rs)
-（MIT，包内自带上游 NOTICE 与 `licenses/`）。本仓库只带生成出来的 blob。
+本仓库的**代码**按 [MIT](LICENSE) 授权。点阵的解码器与字库数据都不放在本仓库：
+[`lovyangfx-fonts`](https://github.com/wangguanghua2099/lovyangfx-fonts-rs) 0.2
+（MIT，解码器 + 抽取工具）与
+[`lovyangfx-fonts-efont-cn`](https://github.com/wangguanghua2099/lovyangfx-fonts-efont-cn)
+0.2（纯数据包，包内自带上游 NOTICE 与 `licenses/`）以依赖形式引入，固件只开
+`efont-cn-14` 一个特性。
 
-`src/fonts/efont_cn_14.bin` 是**衍生数据**，不是本仓库的原创作品：它由
-[LovyanGFX](https://github.com/lovyan03/LovyanGFX) 的
+编进固件的字库数据（efont CN 14px，即数据包里的 `EFONT_CN_14_BLOB`）是**衍生数据**，
+不是本仓库的原创作品：它由 [LovyanGFX](https://github.com/lovyan03/LovyanGFX) 的
 `src/lgfx/Fonts/efont/lgfx_efont_cn.c` 中 `lgfx_efont_cn_14[]` 数组（u8g2 点阵格式）
-经 [`lovyangfx-fonts`](https://github.com/wangguanghua2099/lovyangfx-fonts-rs) 的
-`lgyf-gen` 提取成纯二进制 blob。因此它同时带有两层上游声明：
+经 [`lovyangfx-fonts`](https://github.com/wangguanghua2099/lovyangfx-fonts-rs) 家族的
+`lgyf-gen` 提取成纯二进制 blob 随数据包分发（与 LovyanGFX 上游数组逐字节一致）。
+因此它同时带有两层上游声明：
 
 | 层 | 权利人的声明 | 许可 |
 |----|--------------|------|
@@ -30,8 +34,9 @@
 
 ## 一句话结论
 
-代码可以按 MIT 发布；字库 blob **不需要**改成 MIT，也**不能**宣称是本项目的 MIT 作品 ——
-保留上游声明随包分发即为合规。不带中文点阵的纯工具链（转换器 + 运行时）模式已经落地：
-就是依赖里的 [`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts) crate，它把
-blob 换成"由使用者自备上游字体源"，因此 crate 本身完全不涉及数据分发问题；本仓库只承担
-生成出的 blob 及其上游声明。
+代码可以按 MIT 发布；字库数据 **不需要**改成 MIT，也**不能**宣称是本项目的 MIT 作品 ——
+保留上游声明随包分发即为合规。这套模式已经完整落地：解码器在
+[`lovyangfx-fonts`](https://crates.io/crates/lovyangfx-fonts)，数据在
+[`lovyangfx-fonts-efont-cn`](https://crates.io/crates/lovyangfx-fonts-efont-cn)
+（既允许使用者自备上游字体源，也提供开箱即用的捆绑字库）。本仓库的固件是数据的
+再分发者：把固件二进制给别人时，随附 [`licenses/`](licenses) 里的两份声明即为合规。
