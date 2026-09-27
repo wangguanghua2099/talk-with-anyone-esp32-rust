@@ -131,10 +131,12 @@ async fn main(spawner: Spawner) -> ! {
     let delay = Delay::new();
 
     // ---- 扬声器：I2S1 TDM Philips 32bit 左槽 16k（DMA_CH1）----
-    let tx_buf = match esp_hal::dma_tx_buffer!(audio_output::TX_CHUNK_BYTES) {
-        Ok(b) => b,
-        Err(e) => fail(&delay, "TX DMA 缓冲创建失败", &e),
-    };
+    // 连续流 TX 缓冲（对应 C++ 驱动的 8×512 描述符环形 DMA）：DMA 全程不停启外设
+    // （宏内部 unwrap：静态缓冲创建失败即 panic，与麦克风的 RX 流缓冲同一约定）
+    let tx_buf = esp_hal::dma_tx_stream_buffer!(
+        audio_output::TX_STREAM_BYTES,
+        audio_output::TX_STREAM_CHUNK
+    );
     let i2s_out = match I2s::new(
         peripherals.I2S1,
         peripherals.DMA_CH1,

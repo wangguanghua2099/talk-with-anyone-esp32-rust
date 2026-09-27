@@ -184,11 +184,17 @@ before editing:
 - **`SpiDma` slice writes need `with_buffers()` registered**, otherwise short or
   unaligned writes fail with `BufferTooSmall` *silently* unless you propagate the
   error. SPI write errors are never swallowed in this codebase.
-- **The audio pump probes, it never busy-waits.** esp-hal's blocking `wait()` is
-  `while !is_done() {}`, which starves the network work sharing the executor
-  thread. Each block is re-armed once and then polled on the main loop's tick.
-  Underruns are filled with a whole block of silence — esp-hal has no cyclic
-  channel, and this replaces the IDF `tx_desc_auto_clear` behaviour.
+- **The audio pump probes, it never busy-waits — and TX is a continuous stream.**
+  esp-hal's blocking `wait()` is `while !is_done() {}`, which starves the network
+  work sharing the executor thread. The TX side uses a `DmaTxStreamBuf`: the
+  descriptor chain re-links itself into a ring as data is pushed, and `tick()`
+  only refills descriptors the DMA has already consumed (padding with
+  **silence** when short — the equivalent of the IDF `tx_desc_auto_clear`
+  behaviour), so the peripheral never stops between playback start and finish.
+  It used to be block-driven (write/wait every 128 ms); each block boundary did
+  a tx_stop/tx_start plus a re-arm gap, which was audible as a machine-gun of
+  "pops" under the voice plus distortion — the continuous stream exists to fix
+  exactly that.
 - **PDM stream DMA does not recover by itself.** If the main loop is blocked too
   long the channel overflows and `read()` returns 0 forever; consecutive empty
   reads therefore restart the transfer.
