@@ -17,14 +17,14 @@
 //
 // wss 把同一套取消语义下沉到 TLS 记录层：TLS 读写 future 同样在 select 里被丢弃，
 // 所以本仓库用打过"取消安全"补丁的 .deps/embedded-tls（读头/读体断点续读、
-// 密文记录断点续发；见其 PATCH-NOTES.md 与 docs/wss-改造方案.md §3）。
+// 密文记录断点续发；见其 PATCH-NOTES.md）。
 //
 // **TLS 写路径的隐含约束（改动出站帧尺寸/缓冲前先读这段）**：
 // 为规避 embedded-io-async `Write` 在"取消丢返回值"上的固有歧义，单次 send_raw
 // 的整帧长度必须远小于 TLS 写缓冲的明文块容量（TLS_WRITE_BUF - 29 ≈ 4KB），
 // 保证每次 tls.write 都能"一次性整体入账"（append 全收 + 返回值不丢），
 // 不出现"一部分进了记录缓冲、下次又被重发"的中间态。当前所有出站帧：
-// 麦克风 1024B+14、文本帧 <1KB，安全（详见 docs/wss-改造方案.md §3）。
+// 麦克风 1024B+14、文本帧 <1KB，安全。
 //
 // 握手校验说明：Sec-WebSocket-Accept 需要 SHA-1，局域网自用场景跳过校验
 // （与 C++ 版跳过证书校验同一取舍——wss 的 TLS 层同样用 UnsecureProvider
@@ -37,7 +37,8 @@ use core::net::Ipv4Addr;
 use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Timer};
 use embedded_tls::{
-    Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, TlsError, UnsecureProvider,
+    Aes128GcmSha256, FlushPolicy, TlsConfig, TlsConnection, TlsContext, TlsError,
+    UnsecureProvider,
 };
 use esp_hal::rng::Rng;
 use esp_println::println;
@@ -312,6 +313,16 @@ impl WsClient {
                 _ => return Err(WsError::Io),
             };
             let mut tls = Box::new(TlsConnection::new(socket, tls_rx, tls_tx));
+            // ⭐ 根因修复（2026-10-19）：默认 FlushPolicy::Strict 会让每次
+            //    tls.flush() 收尾调 delegate.flush() = TcpSocket::flush()，
+            //    而它的语义是"等发送缓冲被对端 ACK 清空才返回"。麦克风上行
+            //    ~56 帧/秒逐帧 flush，被 Linux 延迟 ACK 钉死在 ~25-40 帧/秒
+            //    → voice_task 排水不及 → MIC_CH（容量 6）溢出、主循环静默丢块
+            //    （实测每轮丢 26~48% 音频）→ 上行 PCM 满是 32ms 空洞：
+            //    ASR 近音字翻车、VAD 尾静音累积变慢（字幕明显比 ws 慢）。
+            //    Relaxed：密文照常写入 TCP 发送缓冲（协议栈异步上线，与明文
+            //    ws 路径行为一致），只是不再空等 ACK。
+            tls.set_flush_policy(FlushPolicy::Relaxed);
             // enable_rsa_signatures：服务端是 RSA-2048 自签证书（generate_cert.py），
             // 必须在 ClientHello 里通告 RSA 签名算法，否则对端选不出签名套件。
             let tls_config = TlsConfig::new().enable_rsa_signatures();
