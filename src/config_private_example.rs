@@ -15,3 +15,8 @@ pub const SERVER_PORT: u16 = 7862;
 
 /// 访问令牌（如果服务端启用了token验证，留空表示不使用）
 pub const ACCESS_TOKEN: &str = "";
+
+/// 传输层加密开关：
+/// true = wss（TLS 1.3，跳过证书校验；服务端可保留 cert.pem/key.pem 以 HTTPS 启动）
+/// false = 明文 ws（仅调试用；服务端需移除两个证书文件以 HTTP 启动）
+pub const USE_WSS: bool = true;

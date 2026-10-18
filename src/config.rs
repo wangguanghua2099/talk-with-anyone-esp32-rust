@@ -8,6 +8,15 @@ pub use crate::config_private::*;
 pub const WS_VOICE_PATH: &str = "/ws/voice";
 pub const WS_TTS_PATH: &str = "/ws/tts-stream";
 
+// ===== wss / TLS 记录层缓冲（embedded-tls；见 ws.rs 与 docs/wss-改造方案.md §4）=====
+/// TLS 记录读缓冲：单条 TLS 记录最大 16384+256=16640 字节；小于该值
+/// embedded-tls 只会内部告警，但超大记录会被拒 → 给足。
+pub const TLS_READ_BUF: usize = 16640;
+/// TLS 记录写缓冲：明文块上限 = 该值 - 29（记录头+AEAD 开销）≈ 4KB。
+/// 出站 WS 帧（麦克风 ≤1038B、文本帧 <1KB）必须远小于它——单次 tls.write
+/// 要能整体入账，取消安全分析见 ws.rs 文件头。
+pub const TLS_WRITE_BUF: usize = 4096;
+
 // ===== 音频参数（与服务端约定一致，勿改）=====
 pub const MIC_SAMPLE_RATE: u32 = 16000; // 上行 PCM16 单声道
 pub const SPK_SAMPLE_RATE: u32 = 16000; // 下行（鹿小班同款 16k；服务端 audio.start 会覆盖）

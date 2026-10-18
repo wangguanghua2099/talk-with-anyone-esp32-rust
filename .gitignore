@@ -1,7 +1,10 @@
 /target
 
 # 本地 monorepo 克隆（tag esp-hal-v1.2.0，见 README/Cargo.toml 说明）
-/.deps
+/.deps/*
+# 例外：embedded-tls 是打过取消安全补丁的 vendored 拷贝（wss 支持），随仓库入库，
+# 改动说明见其 PATCH-NOTES.md；esp-hal 一族继续走上一条的忽略规则
+!/.deps/embedded-tls
 
 # 私密配置（WiFi 密码、服务器 IP、token）不入库；含编辑器/手工备份副本
 /src/config_private.rs

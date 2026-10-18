@@ -21,6 +21,15 @@ embassy-futures = "0.1.1"
 embassy-net = { version = "0.9.0", features = ["dhcpv4", "medium-ethernet", "tcp", "dns", "udp"] }
 embassy-time = "0.5.0"
 embassy-sync = "0.8.0"
+# wss（TLS 1.3）客户端：纯 Rust no_std 实现，用本仓库 .deps/embedded-tls
+# （自 crates.io 0.19.0 复制并打了"取消安全"补丁；本固件在 select(next_frame, 50ms)
+# 里调用 TLS 读写，必须取消安全——动机、改动清单与升级指引见其 PATCH-NOTES.md）。
+# default-features = false：不做证书校验（与 C++ 版 beginSSL(..., nullptr, nullptr) 同策略），
+# 不需要 webpki/rustpki/rsa/std 等特性；RSA 由运行时 enable_rsa_signatures() 通告。
+embedded-tls = { path = ".deps/embedded-tls", default-features = false }
+# embedded-tls 握手需要 rand_core 0.6 的 RngCore/CryptoRng 取随机数；
+# esp-hal 的 `unstable` 特性已为 Rng 实现同版本 RngCore，ws.rs 里补一个 CryptoRng 适配器。
+rand_core = "0.6"
 # u8g2 / LovyanGFX 点阵字库：解码器 + 捆绑数据（原 src/font.rs 抽成的 crate 家族）。
 # default-features = false：关掉 `gen`（C 字面量解析 + blob 抽取，会拉进 alloc），
 # 设备侧不引入 alloc。efont-cn-14 特性经主 crate 0.2 的 fonts 模块桥接独立的纯数据包

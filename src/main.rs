@@ -117,8 +117,9 @@ async fn main(spawner: Spawner) -> ! {
 
     println!("\n=== TWA · 鹿小班三代 ESP32 前端 (Rust) ===");
     println!(
-        "WiFi: {}  Server: ws://{}:{}",
+        "WiFi: {}  Server: {}://{}:{}",
         config::WIFI_SSID,
+        if config::USE_WSS { "wss" } else { "ws" },
         config::SERVER_HOST,
         config::SERVER_PORT
     );
@@ -280,6 +281,10 @@ async fn main(spawner: Spawner) -> ! {
     let payload_buf = mk_static!([u8; WS_PAYLOAD_CAP], [0u8; WS_PAYLOAD_CAP]);
     let ws_rx = mk_static!([u8; 8192], [0u8; 8192]);
     let ws_tx = mk_static!([u8; 4096], [0u8; 4096]);
+    // wss（TLS 1.3）记录层缓冲：读侧必须 16640（单条 TLS 记录上限 16384+256）；
+    // 写侧 4096（明文块 ≈4KB；出站帧须远小于它的约束见 config::TLS_WRITE_BUF）
+    let tls_rx = mk_static!([u8; config::TLS_READ_BUF], [0u8; config::TLS_READ_BUF]);
+    let tls_tx = mk_static!([u8; config::TLS_WRITE_BUF], [0u8; config::TLS_WRITE_BUF]);
 
     // ---- 服务端地址（配置为局域网 IPv4；域名解析留待后续按需加 DNS）----
     let server_ip: Ipv4Addr = match config::SERVER_HOST.parse() {
@@ -297,6 +302,8 @@ async fn main(spawner: Spawner) -> ! {
             payload_buf,
             ws_rx,
             ws_tx,
+            tls_rx,
+            tls_tx,
             rng.random(),
         )
         .unwrap());
@@ -621,7 +628,9 @@ async fn voice_task(
     payload: &'static mut [u8],
     ws_rx: &'static mut [u8],
     ws_tx: &'static mut [u8],
-    mut mask_seed: u32,
+    tls_rx: &'static mut [u8],
+    tls_tx: &'static mut [u8],
+    mask_seed: u32,
 ) -> ! {
     let path = voice_client::ws_path_with_token(config::WS_VOICE_PATH);
 
@@ -634,6 +643,8 @@ async fn voice_task(
         &path,
         ws_rx,
         ws_tx,
+        tls_rx,
+        tls_tx,
         mask_seed,
     )
     .await;
@@ -724,7 +735,7 @@ async fn voice_task(
             MIC_ACTIVE.store(false, Ordering::Relaxed);
         }
 
-        // 断线重连（socket abort 后复用，缓冲不丢）
+        // 断线重连（整体丢弃旧 socket/TLS 连接后重建，静态缓冲不丢）
         println!("[Voice] 3s 后重连...");
         Timer::after_millis(3000).await;
         let mut retried = 0u32;

@@ -1,8 +1,9 @@
-// ws.rs —— 极简 RFC6455 WebSocket 客户端（embassy-net TcpSocket 之上）
+// ws.rs —— 极简 RFC6455 WebSocket 客户端（embassy-net TcpSocket 之上，支持 ws/wss）
 //
 // 面向 talk-with-anyone 的需要裁剪：
 // · 客户端→服务端帧必须掩码（RFC6455 要求），服务端→客户端帧不掩码
 // · 收方向：文本（JSON 控制流）/二进制/ping→自动回 pong/close/分片累积
+// · 传输层二选一：ws（明文 TCP）或 wss（TLS 1.3，由 config::USE_WSS 切换）
 //
 // **取消安全（这里的命门，改代码务必守住）**
 // voice_task 每圈用 `select(next_frame, Timer::50ms)` 保证按键/麦克风的上行节拍，
@@ -14,15 +15,34 @@
 // 天文数字 = TooLarge/Io → 断线重连死循环。11KB 的 audio.chunk 需要多个 TCP 段
 // 才能收齐、几乎必然跨过一次 50ms 超时，所以小 JSON 文字帧能过、音频帧必炸。
 //
+// wss 把同一套取消语义下沉到 TLS 记录层：TLS 读写 future 同样在 select 里被丢弃，
+// 所以本仓库用打过"取消安全"补丁的 .deps/embedded-tls（读头/读体断点续读、
+// 密文记录断点续发；见其 PATCH-NOTES.md 与 docs/wss-改造方案.md §3）。
+//
+// **TLS 写路径的隐含约束（改动出站帧尺寸/缓冲前先读这段）**：
+// 为规避 embedded-io-async `Write` 在"取消丢返回值"上的固有歧义，单次 send_raw
+// 的整帧长度必须远小于 TLS 写缓冲的明文块容量（TLS_WRITE_BUF - 29 ≈ 4KB），
+// 保证每次 tls.write 都能"一次性整体入账"（append 全收 + 返回值不丢），
+// 不出现"一部分进了记录缓冲、下次又被重发"的中间态。当前所有出站帧：
+// 麦克风 1024B+14、文本帧 <1KB，安全（详见 docs/wss-改造方案.md §3）。
+//
 // 握手校验说明：Sec-WebSocket-Accept 需要 SHA-1，局域网自用场景跳过校验
-// （与 C++ beginSSL 跳过证书校验同一取舍），只检查 101 状态码。
+// （与 C++ 版跳过证书校验同一取舍——wss 的 TLS 层同样用 UnsecureProvider
+// 跳过证书链/主机名校验），只检查 101 状态码。
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Timer};
+use embedded_tls::{
+    Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, TlsError, UnsecureProvider,
+};
+use esp_hal::rng::Rng;
 use esp_println::println;
+
+use crate::config;
 
 /// WS 帧类型（载荷留在调用方传入的缓冲里，用返回的长度切片）
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -60,6 +80,83 @@ enum Stage {
     Discard,
 }
 
+/// esp-hal Rng → embedded-tls 需要的 rand_core 0.6 `CryptoRngCore` 适配器。
+/// esp-hal 的 `unstable` 特性（本工程已开）已为 `Rng` 实现 rand_core 0.6 的
+/// `RngCore`（RNG_DATA 硬件寄存器），这里只差补一个 `CryptoRng` 标记。
+struct TrngRng(Rng);
+
+impl TrngRng {
+    fn new() -> Self {
+        Self(Rng::new())
+    }
+}
+
+impl rand_core::RngCore for TrngRng {
+    fn next_u32(&mut self) -> u32 {
+        rand_core::RngCore::next_u32(&mut self.0)
+    }
+    fn next_u64(&mut self) -> u64 {
+        rand_core::RngCore::next_u64(&mut self.0)
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        rand_core::RngCore::fill_bytes(&mut self.0, dest)
+    }
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+        rand_core::RngCore::try_fill_bytes(&mut self.0, dest)
+    }
+}
+
+impl rand_core::CryptoRng for TrngRng {}
+
+/// 传输层：明文 TCP（ws）或 TLS 1.3（wss）
+enum Transport {
+    /// 占位态（仅 TLS 换装/重连释放旧连接的瞬间出现，出现即内部错误）
+    Empty,
+    /// 明文 ws（config::USE_WSS = false）
+    Plain(TcpSocket<'static>),
+    /// wss：TLS 1.3 over TCP（Boxed：TlsConnection 本体放堆上，不占任务状态）
+    Tls(Box<TlsConnection<'static, TcpSocket<'static>, Aes128GcmSha256>>),
+}
+
+impl Transport {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, WsError> {
+        match self {
+            Transport::Plain(socket) => socket.read(buf).await.map_err(|_| WsError::Io),
+            // 取消安全由 .deps/embedded-tls 的补丁保证（见文件头）
+            Transport::Tls(tls) => tls.read(buf).await.map_err(tls_err),
+            Transport::Empty => Err(WsError::Io),
+        }
+    }
+
+    async fn write(&mut self, data: &[u8]) -> Result<usize, WsError> {
+        match self {
+            Transport::Plain(socket) => socket.write(data).await.map_err(|_| WsError::Io),
+            // 注意返回值语义：wss 下是"已收进 TLS 记录缓冲"的字节数（可能少于
+            // data.len()）；记录本体要等 flush() 才上线路。取消安全的边界见文件头。
+            Transport::Tls(tls) => tls.write(data).await.map_err(tls_err),
+            Transport::Empty => Err(WsError::Io),
+        }
+    }
+
+    /// 把 TLS 记录层缓冲里的密文推上线（明文模式 no-op）。
+    /// flush_pending 每帧收尾必调：wss 下不调的话记录会一直躺在写缓冲里。
+    async fn flush(&mut self) -> Result<(), WsError> {
+        match self {
+            Transport::Plain(_) => Ok(()),
+            Transport::Tls(tls) => tls.flush().await.map_err(tls_err),
+            Transport::Empty => Err(WsError::Io),
+        }
+    }
+}
+
+/// TLS 错误 → WS 错误：对端正常关闭（close_notify/EOF）映射 Closed，其余按 Io。
+fn tls_err(e: TlsError) -> WsError {
+    match e {
+        TlsError::ConnectionClosed => WsError::Closed,
+        _ => WsError::Io,
+    }
+}
+
 /// 极简 base64 编码（握手 key 用，16 字节 → 24 字符）
 fn b64_encode_short(data: &[u8], out: &mut String) {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -75,7 +172,17 @@ fn b64_encode_short(data: &[u8], out: &mut String) {
 }
 
 pub struct WsClient {
-    socket: TcpSocket<'static>,
+    /// 网络栈（重连重建 socket 用；Stack 是 Copy）
+    stack: embassy_net::Stack<'static>,
+    /// 当前传输（明文 TCP 或 TLS）
+    transport: Transport,
+    // 缓冲裸指针：socket/TLS 对象按生命周期"吞掉"了 &'static mut 借用，
+    // 断线整体重建时需要重新取回。SAFETY 约定见 connect()/reconnect() 注释：
+    // 单任务顺序执行；解引用前旧持有者（socket/TLS 对象）必须已 drop。
+    ws_rx_ptr: *mut [u8],
+    ws_tx_ptr: *mut [u8],
+    tls_rx_ptr: *mut [u8],
+    tls_tx_ptr: *mut [u8],
     stage: Stage,
     // 帧头（跨取消持久：扩展长度由已落盘的 hdr[0..2] 重算，无需额外字段）
     hdr: [u8; HDR_MAX],
@@ -104,29 +211,39 @@ const HDR_MAX: usize = 10;
 const DBUF: usize = 256;
 
 impl WsClient {
-    /// 发起 TCP 连接并完成 WS 升级握手。永不失败：握手未成功前内部重试
-    /// （缓冲随本对象移交后，由 socket 反复重建；每次重建前上一个 socket
-    /// 已完全 drop，缓冲独占性恢复）。
+    /// 发起连接（含 wss 时的 TLS 握手）并完成 WS 升级握手。永不失败：
+    /// 握手未成功前内部重试（缓冲随本对象移交后，由 socket/TLS 对象反复重建；
+    /// 每次重建前上一个对象已完全 drop，缓冲独占性恢复）。
+    #[allow(clippy::too_many_arguments)]
     pub async fn connect(
         stack: embassy_net::Stack<'static>,
         ip: Ipv4Addr,
         port: u16,
         path: &str,
-        rx_buf: &'static mut [u8],
-        tx_buf: &'static mut [u8],
+        ws_rx: &'static mut [u8],
+        ws_tx: &'static mut [u8],
+        tls_rx: &'static mut [u8],
+        tls_tx: &'static mut [u8],
         mask_seed: u32,
     ) -> Self {
-        // SAFETY：两根裸指针指向 mk_static 出来的 'static 缓冲；每次循环末尾
-        // 整个 client（含 socket）先 drop，再从指针重建 &'static mut，不存在
-        // 存活的重叠引用。单任务顺序执行，无并发访问。
-        let rx_ptr: *mut [u8] = rx_buf;
-        let tx_ptr: *mut [u8] = tx_buf;
+        // SAFETY：四根裸指针指向 mk_static 出来的 'static 缓冲；每次循环末尾
+        // 整个 client（含 socket/TLS 连接）先 drop，再从指针重建 &'static mut，
+        // 不存在存活的重叠引用。单任务顺序执行，无并发访问。
+        let ws_rx_ptr: *mut [u8] = ws_rx;
+        let ws_tx_ptr: *mut [u8] = ws_tx;
+        let tls_rx_ptr: *mut [u8] = tls_rx;
+        let tls_tx_ptr: *mut [u8] = tls_tx;
         loop {
             // SAFETY: see above
-            let rx: &'static mut [u8] = unsafe { &mut *rx_ptr };
-            let tx: &'static mut [u8] = unsafe { &mut *tx_ptr };
+            let rx: &'static mut [u8] = unsafe { &mut *ws_rx_ptr };
+            let tx: &'static mut [u8] = unsafe { &mut *ws_tx_ptr };
             let mut client = Self {
-                socket: TcpSocket::new(stack, rx, tx),
+                stack,
+                transport: Transport::Plain(TcpSocket::new(stack, rx, tx)),
+                ws_rx_ptr,
+                ws_tx_ptr,
+                tls_rx_ptr,
+                tls_tx_ptr,
                 stage: Stage::Hdr,
                 hdr: [0; HDR_MAX],
                 hdr_have: 0,
@@ -152,28 +269,69 @@ impl WsClient {
         }
     }
 
-    /// 断线后重连：abort 旧连接（回到 Closed 态）后重新握手。
-    /// embassy-net 的 TcpSocket 在 Closed 态可再次 connect，缓冲得以复用。
+    /// 断线后重连：整体丢弃旧传输（TLS 包装 + TcpSocket，drop 即断开），
+    /// 用裸指针重建明文 socket 后重新握手（含 TLS）。
     pub async fn reconnect(&mut self, ip: Ipv4Addr, port: u16, path: &str) -> Result<(), WsError> {
-        self.socket.abort();
+        // 旧连接在这里整体 drop（TLS 对象 → TcpSocket → smoltcp socket 被移除）
+        self.transport = Transport::Empty;
         self.tx_pending.clear();
         self.tx_sent = 0;
         self.frag.clear();
         self.frag_active = false;
         self.reset_frame();
+
+        // SAFETY：上一行的赋值已 drop 旧 socket/TLS 对象，两根 WS 缓冲恢复独占；
+        // 单任务顺序执行，无并发访问。
+        let rx: &'static mut [u8] = unsafe { &mut *self.ws_rx_ptr };
+        let tx: &'static mut [u8] = unsafe { &mut *self.ws_tx_ptr };
+        self.transport = Transport::Plain(TcpSocket::new(self.stack, rx, tx));
         self.handshake(ip, port, path).await
     }
 
-    /// TCP 连接 + WS 升级握手。握手不在 select 里跑（不会被取消），
-    /// 所以这里的中间状态允许用局部变量。
+    /// TCP 连接 +（wss 时）TLS 1.3 握手 + WS 升级握手。整段不在 select 里跑
+    /// （不会被取消），所以这里的中间状态允许用局部变量。
     async fn handshake(&mut self, ip: Ipv4Addr, port: u16, path: &str) -> Result<(), WsError> {
-        self.socket.set_timeout(Some(Duration::from_secs(10)));
-        self.socket
-            .connect((ip, port))
-            .await
-            .map_err(|_| WsError::Io)?;
+        // ---- TCP 连接（明文/TLS 共用）----
+        match &mut self.transport {
+            Transport::Plain(socket) => {
+                socket.set_timeout(Some(Duration::from_secs(10)));
+                socket.connect((ip, port)).await.map_err(|_| WsError::Io)?;
+            }
+            _ => return Err(WsError::Io),
+        }
 
-        // 升级请求
+        // ---- wss：TLS 1.3 握手（跳过证书校验，与 C++ 版 beginSSL(nullptr) 同策略）----
+        if config::USE_WSS {
+            // SAFETY：TLS 记录缓冲的裸指针此刻独占可用——重连路径上旧 TLS 连接
+            // 已随 transport 整体 drop；首次连接路径上这两块缓冲从未被借出。
+            let tls_rx: &'static mut [u8] = unsafe { &mut *self.tls_rx_ptr };
+            let tls_tx: &'static mut [u8] = unsafe { &mut *self.tls_tx_ptr };
+
+            let socket = match core::mem::replace(&mut self.transport, Transport::Empty) {
+                Transport::Plain(s) => s,
+                _ => return Err(WsError::Io),
+            };
+            let mut tls = Box::new(TlsConnection::new(socket, tls_rx, tls_tx));
+            // enable_rsa_signatures：服务端是 RSA-2048 自签证书（generate_cert.py），
+            // 必须在 ClientHello 里通告 RSA 签名算法，否则对端选不出签名套件。
+            let tls_config = TlsConfig::new().enable_rsa_signatures();
+            let provider = UnsecureProvider::new::<Aes128GcmSha256>(TrngRng::new());
+            match tls
+                .open(TlsContext::new(&tls_config, provider))
+                .await
+            {
+                Ok(()) => self.transport = Transport::Tls(tls),
+                Err(e) => {
+                    // 失败：TLS 对象连同内部 TcpSocket 一起 drop（连接即断），
+                    // transport 停留在 Empty；外层 connect 循环/重连逻辑会重建
+                    println!("[Voice] TLS 握手失败: {e:?}");
+                    drop(tls);
+                    return Err(WsError::HandshakeFailed);
+                }
+            }
+        }
+
+        // ---- 升级请求（wss 下经 TLS 记录层）----
         let mut key = [0u8; 16];
         let mut seed = self.mask_state;
         for w in key.chunks_mut(4) {
@@ -188,13 +346,15 @@ impl WsClient {
              Sec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\n\r\n",
             path, ip, key_b64
         );
-        write_all(&mut self.socket, req.as_bytes()).await?;
+        write_all(&mut self.transport, req.as_bytes()).await?;
+        // wss：请求还在 TLS 写缓冲里，必须 flush 才上线（明文模式为 no-op）
+        self.transport.flush().await?;
 
-        // 读响应头到 \r\n\r\n
+        // ---- 读响应头到 \r\n\r\n ----
         let mut resp = Vec::with_capacity(512);
         let mut byte = [0u8; 1];
         loop {
-            let n = self.socket.read(&mut byte).await.map_err(|_| WsError::Io)?;
+            let n = self.transport.read(&mut byte).await?;
             if n == 0 {
                 return Err(WsError::Closed);
             }
@@ -228,7 +388,7 @@ impl WsClient {
             match self.stage {
                 // ---- 帧头 ----
                 Stage::Hdr => {
-                    fill(&mut self.socket, &mut self.hdr[..2], &mut self.hdr_have).await?;
+                    fill(&mut self.transport, &mut self.hdr[..2], &mut self.hdr_have).await?;
                     let len7 = (self.hdr[1] & 0x7F) as usize;
                     let ext = if len7 == 126 {
                         2
@@ -239,7 +399,7 @@ impl WsClient {
                     };
                     if ext > 0 {
                         // 取消在此处发生也没关系：hdr_have 已记着已收字节数
-                        fill(&mut self.socket, &mut self.hdr[..2 + ext], &mut self.hdr_have)
+                        fill(&mut self.transport, &mut self.hdr[..2 + ext], &mut self.hdr_have)
                             .await?;
                     }
                     self.opcode = self.hdr[0] & 0x0F;
@@ -270,7 +430,7 @@ impl WsClient {
                 Stage::Ctl => {
                     // RFC6455：控制帧载荷 ≤125B，一段收完
                     let k = self.payload_len.min(DBUF);
-                    fill(&mut self.socket, &mut self.dbuf[..k], &mut self.dbuf_have).await?;
+                    fill(&mut self.transport, &mut self.dbuf[..k], &mut self.dbuf_have).await?;
                     let is_ping = self.opcode == 0x9;
                     let mut pong = [0u8; DBUF];
                     pong[..k].copy_from_slice(&self.dbuf[..k]);
@@ -289,7 +449,7 @@ impl WsClient {
                 Stage::Discard => {
                     while self.discard_left < self.payload_len {
                         let k = (self.payload_len - self.discard_left).min(DBUF);
-                        fill(&mut self.socket, &mut self.dbuf[..k], &mut self.dbuf_have).await?;
+                        fill(&mut self.transport, &mut self.dbuf[..k], &mut self.dbuf_have).await?;
                         self.discard_left += k;
                         self.dbuf_have = 0;
                     }
@@ -300,7 +460,7 @@ impl WsClient {
                 // ---- 数据帧载荷 + 分片归并 ----
                 Stage::Payload => {
                     let n = self.payload_len;
-                    fill(&mut self.socket, &mut out[..n], &mut self.payload_have).await?;
+                    fill(&mut self.transport, &mut out[..n], &mut self.payload_have).await?;
                     let fin = self.hdr[0] & 0x80 != 0;
                     let op = self.opcode;
 
@@ -358,6 +518,12 @@ impl WsClient {
 
     /// 构造掩码帧并发送（帧体先进 tx_pending，写完才清空 → 取消安全）
     async fn send_raw(&mut self, opcode: u8, payload: &[u8]) -> Result<(), WsError> {
+        // 上一帧还有尾巴没写完（上一次 flush_pending 在 await 点被取消）：
+        // 先把旧帧补完，否则下面的覆盖会把旧帧的剩余部分永久丢在线路之外
+        // ——半截帧会让服务端帧解析错位（比丢整帧严重得多）。
+        if self.tx_sent < self.tx_pending.len() {
+            self.flush_pending().await?;
+        }
         let mut frame = Vec::with_capacity(payload.len() + 14);
         frame.push(0x80 | opcode); // FIN + opcode
         self.mask_state = self
@@ -383,14 +549,15 @@ impl WsClient {
         self.flush_pending().await
     }
 
-    /// 把 tx_pending 的剩余部分写完；`tx_sent` 持久，取消后从此处续发
+    /// 把 tx_pending 的剩余部分写完；`tx_sent` 持久，取消后从此处续发。
+    /// 帧尾必调 transport.flush()：wss 下把 TLS 记录层的密文推上线
+    /// （明文模式 no-op）。若 flush 被取消：tx_sent 已 == len，下次自动重试。
     async fn flush_pending(&mut self) -> Result<(), WsError> {
         while self.tx_sent < self.tx_pending.len() {
             let n = self
-                .socket
+                .transport
                 .write(&self.tx_pending[self.tx_sent..])
-                .await
-                .map_err(|_| WsError::Io)?;
+                .await?;
             if n == 0 {
                 self.tx_pending.clear();
                 self.tx_sent = 0;
@@ -398,6 +565,7 @@ impl WsClient {
             }
             self.tx_sent += n;
         }
+        self.transport.flush().await?;
         self.tx_pending.clear();
         self.tx_sent = 0;
         Ok(())
@@ -417,12 +585,14 @@ impl WsClient {
 
 /// 读满 dst；进度写回 `have`（持久）→ 被取消后从中断处续读，不丢字节
 async fn fill(
-    socket: &mut TcpSocket<'static>,
+    transport: &mut Transport,
     dst: &mut [u8],
     have: &mut usize,
 ) -> Result<(), WsError> {
     while *have < dst.len() {
-        let n = socket.read(&mut dst[*have..]).await.map_err(|_| WsError::Io)?;
+        let n = transport
+            .read(&mut dst[*have..])
+            .await?;
         if n == 0 {
             return Err(WsError::Closed);
         }
@@ -431,9 +601,9 @@ async fn fill(
     Ok(())
 }
 
-async fn write_all(socket: &mut TcpSocket<'static>, mut data: &[u8]) -> Result<(), WsError> {
+async fn write_all(transport: &mut Transport, mut data: &[u8]) -> Result<(), WsError> {
     while !data.is_empty() {
-        let n = socket.write(data).await.map_err(|_| WsError::Io)?;
+        let n = transport.write(data).await?;
         if n == 0 {
             return Err(WsError::Closed);
         }

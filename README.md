@@ -24,13 +24,13 @@
 | 自动聆听 / 打断 / 冷却 / 播完续听 | ✅ 实测 | 三态状态机全环 |
 | 麦克风采集（I2S0 PDM RX，16 kHz 单声道，`<<5` 增益） | ✅ 实测 |
 | 播放（I2S1 TDM 32bit、3 MB PSRAM 环形缓冲、24k→16k 重采样、音量曲线） | ✅ 实测 | 实测稳定 ≈61 kB/s，无欠载 |
-| WebSocket 客户端（`/ws/voice`，RFC6455，自动重连） | ✅ 实测 | 仅明文 `ws://`，见[已知限制](#已知限制) |
+| WebSocket 客户端（`/ws/voice`，RFC6455，自动重连） | ✅ 实测 | `ws://` 与 `wss://`（TLS 1.3，跳过自签证书校验，`USE_WSS` 开关）；wss 链路待上机复测 |
 | 流式字幕（打字机、折行、80 行滚动） | ✅ 实测 |
 | ST7789 240×240 驱动 + 中文点阵字库 + 局部重绘 | ✅ 实测 |
 | 顶栏 SNTP 时钟 / WiFi 信号柱 | ✅ 实测 |
 | 顶栏电量（ADC2_CH6/GPIO17，30s 一采）+ 充电标志 | ✅ 实测 | S3 上 ADC2 与 WiFi 可共存；百分比量程待校准 |
 | 音量键 | ✅ 实时生效 / ⬜ 不持久化 | 缺 NVS 存储 |
-| `/ws/tts-stream` 兜底、语音打断（barge-in）、TLS | ⬜ 未实现 | |
+| `/ws/tts-stream` 兜底、语音打断（barge-in） | ⬜ 未实现 | |
 
 ## 硬件
 
@@ -69,7 +69,11 @@ crates.io 拉取，`cargo build` 自动完成。新克隆请先执行：
 git clone --branch esp-hal-v1.2.0 --depth 1 https://github.com/esp-rs/esp-hal .deps/esp-hal
 ```
 
-验证基线：tag `esp-hal-v1.2.0`（commit `dbd951f`）。`.deps/` 已被 gitignore。
+验证基线：tag `esp-hal-v1.2.0`（commit `dbd951f`）。`.deps/esp-hal` 已被 gitignore。
+
+同一目录下的 `.deps/embedded-tls` 是自 crates.io 0.19.0 复制的 **embedded-tls 补丁版**
+（wss 支持的 TLS 1.3 客户端；取消安全补丁的动机与改动清单见其 `PATCH-NOTES.md` 与
+[`docs/wss-改造方案.md`](docs/wss-改造方案.md)），**随仓库入库**，无需手工准备。
 
 ### 3. 私密配置
 
@@ -104,14 +108,17 @@ espflash flash target/xtensa-esp32s3-none-elf/release/talk-with-anyone-esp32
 
 ### 5. 开聊
 
-**服务端要以 HTTP 模式启动，别用 HTTPS/WSS。** 后端 `main.py` 在自己的目录根下同时
-看到 `cert.pem` 和 `key.pem` 就会带 `ssl_certfile`/`ssl_keyfile` 起 uvicorn，于是
-浏览器能开、固件连不上 —— 本固件只说明文 `ws://`，TLS 握手第一步就对不上，串口表现为
-`[Voice] 连接失败: Io` 反复重连。要跑 HTTP，把这两个证书文件临时移出后端目录（放到
-任何子目录或其他位置都行，只要 `<后端目录>/cert.pem` 不再存在），聊完再放回去。
-服务端启动日志会说明它走了哪条路：出现 `[MAIN] 检测到 HTTPS 证书，以 https://<本机IP>:7862 启动`
-就是 HTTPS，没出现即 HTTP。这一条只约束 Rust 版；C++ 版走 `wss://`（不校验自签证书），
-连 HTTPS 起的后端是正常的。
+**服务端带不带证书都能连，取决于固件的 `USE_WSS` 开关**（`config_private.rs`）：
+
+| 固件 `USE_WSS` | 连接方式 | 服务端目录 | 说明 |
+|---|---|---|---|
+| `true`（默认） | `wss://`（TLS 1.3，跳过自签证书校验） | **保留** `cert.pem`+`key.pem`（HTTPS 启动） | 与 C++ 版同策略；证书不用再移动 |
+| `false` | `ws://`（明文） | **移除**两个证书文件（HTTP 启动） | 仅调试用（抓包、排查链路） |
+
+服务端启动日志会说明它走了哪条路：出现
+`[MAIN] 检测到 HTTPS 证书，以 https://<本机IP>:7862 启动` 就是 HTTPS，没出现即 HTTP。
+两边对不上时的串口表现都是 `[Voice] 连接失败: ...` 反复重试（wss 连 HTTP 后端会先打印
+`[Voice] TLS 握手失败: ...`），改开关或挪证书即可。
 
 固件连上后会自动进入聆听。
 
@@ -139,7 +146,7 @@ ntp_task             ── 先等 IP，再做 SNTP
 |------|------|
 | [`main.rs`](src/main.rs) | 硬件 bring-up、三态状态机、任务装配 |
 | [`voice_client.rs`](src/voice_client.rs) | 报文构造、宽容 JSON 扫描、`RoundTracker` 轮次守卫 |
-| [`ws.rs`](src/ws.rs) | embassy-net 之上的 RFC6455 客户端，取消安全 |
+| [`ws.rs`](src/ws.rs) | embassy-net 之上的 RFC6455 客户端（`ws`/`wss`），取消安全 |
 | [`audio_input.rs`](src/audio_input.rs) | PDM 采集、增益、流式 DMA 恢复 |
 | [`audio_output.rs`](src/audio_output.rs) | PSRAM 环形缓冲、线性插值重采样、音量曲线、提示音 |
 | [`display.rs`](src/display.rs) | 字幕数据模型：打字机、折行、历史、状态 |
@@ -177,6 +184,13 @@ ntp_task             ── 先等 IP，再做 SNTP
   按键与麦克风上行的节拍，因此它可能在任意 await 点被整体丢弃。所有跨 await 的中间状态
   都落在 `self` 字段里（`stage`、`hdr_have`、`payload_have`、`discard_left`、
   `tx_pending`/`tx_sent`…）—— 半截帧放在局部变量里，一被取消就丢字节、流就失步。
+- **wss 把这个约束下沉到了 TLS 记录层。** 同一套 select 结构同样会丢弃 TLS 读写
+  future，而 embedded-tls 0.19 原生不具备取消安全，因此本仓库使用它的补丁拷贝
+  [`.deps/embedded-tls`](.deps/embedded-tls)：读记录头/记录体断点续读、密文记录
+  断点续发（动机、改动清单与升级指引见其 `PATCH-NOTES.md`，设计推演见
+  [`docs/wss-改造方案.md`](docs/wss-改造方案.md)）。另有一条尺寸约束：单帧必须
+  远小于 TLS 写缓冲的明文块（4 KB 量级），否则会踩到 embedded-io-async `Write`
+  在"取消丢返回值"上的歧义——细节写在 `ws.rs` 文件头。
 - **协议解析刻意做得宽容**（平坦对象扫描器）而不是 serde 严格 tagged 枚举，与 ArduinoJson
   的探测式语义一致：未知字段、未知消息类型都不能让连接语义崩掉。
 - **`RoundTracker` 对齐 C++ 的轮次守卫**：打断后迟到的内容整条丢弃；新的 `asr.result`
@@ -235,7 +249,7 @@ ntp_task             ── 先等 IP，再做 SNTP
 | 说话没反应 | 说话时的 `[麦克风] 峰值=` | 应当超过 10000。接近 0 → PDM 接线或 `MIC_GAIN_SHIFT`；反复出现 `[AudioIn] 连续无数据` → 流式 DMA 溢出（驱动会自己重启通道） |
 | 回复卡顿/毛刺 | `[AudioOut] 已输出` 的增长速度 | 低于 ≈64 kB/s 说明泵被抽干了；查 `buffered()`、环容量、WiFi 信号 |
 | 时钟显示 `--:--` | `[NTP] 对时成功` | 路由器拦了出站 UDP 123，或 `NTP_SERVERS` 全不可达 |
-| `[Voice] 连接失败: Io` 一直刷 | 服务端是不是 HTTPS 起的，其次防火墙 | 客户端只说明文 `ws://`：后端目录根下还留着 `cert.pem`+`key.pem` 时，服务端会以 WSS 启动，握手第一步就连不上（处理办法见[开聊](#5-开聊)） |
+| `[Voice] 连接失败: Io` 一直刷 | 上一行有没有 `[Voice] TLS 握手失败` | ① `USE_WSS` 开关与服务端证书状态对不上（`true` 连了 HTTP 后端 / `false` 连了 HTTPS 后端，见[开聊](#5-开聊)）；② 防火墙拦了 7862；③ 服务端没在跑 |
 
 **任何一个任务 panic 都会带走整个界面**：esp-rtos 下所有 embassy 任务共用一个执行器线程，
 esp-backtrace 的 panic handler 打完就 `loop {}` 而不复位。于是屏幕冻在最后一帧上 ——
@@ -243,9 +257,9 @@ esp-backtrace 的 panic handler 打完就 `loop {}` 而不复位。于是屏幕�
 
 ## 已知限制
 
-- **没有 TLS。** 客户端只说 `ws://`，所以服务端必须以 HTTP 模式启动，见[开聊](#5-开聊)。
-  C++ 版相反，它走的是 `wss://`（`beginSSL(host, port, path, nullptr, nullptr)`：CA 与指纹
-  都不传 = 不校验自签证书），因此能直连 HTTPS 起的后端。Rust 侧缺的是 TLS 客户端本身。
+- **wss 不校验服务端证书**（`UnsecureProvider`：证书链与主机名都不验，与 C++ 版
+  `beginSSL(host, port, path, nullptr, nullptr)` 同策略）。局域网自用取舍；将服务端
+  固定证书（钉扎指纹/公钥）列为后续可选增强。
 - **`SERVER_HOST` 只接受 IPv4 字面量**，还没有 DNS 客户端。
 - **音量不持久化** —— C++ 版用 NVS（`Preferences`）存，Rust 侧还缺 NVS 绑定。
 - **电量百分比的量程还没校准。** S3 上 ADC2 与 WiFi **可以共存**（"WiFi 开启后 ADC2
@@ -263,6 +277,9 @@ esp-backtrace 的 panic handler 打完就 `loop {}` 而不复位。于是屏幕�
 
 - [esp-hal](https://github.com/esp-rs/esp-hal) / [embassy](https://embassy.dev/)
   —— 本移植所依赖的 Rust 嵌入式栈
+- [embedded-tls](https://github.com/drogue-iot/embedded-tls) —— 纯 Rust `no_std` 的
+  TLS 1.3 客户端，wss 支持由其提供（本仓库使用打过取消安全补丁的本地拷贝，
+  见 [`.deps/embedded-tls`](.deps/embedded-tls)）
 - [LovyanGFX](https://github.com/lovyan03/LovyanGFX) —— ST7789 面板配置，以及
   [`src/lgfx/Fonts/efont`](https://github.com/lovyan03/LovyanGFX/tree/master/src/lgfx/Fonts/efont)
   下的 `efont CN` 点阵数组；这些数组本身由 `/efont`（Electronic Font Open Laboratory）

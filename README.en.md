@@ -29,13 +29,13 @@ regression pass against the C++ build.
 | Auto-listen / interrupt / cooldown / resume-after-playback | ✅ verified | full three-state machine |
 | Mic capture (I2S0 PDM RX, 16 kHz mono, `<<5` gain) | ✅ verified |
 | Playback (I2S1 TDM 32-bit, 3 MB PSRAM ring, 24k→16k resampling, volume curve) | ✅ verified | measured ≈61 kB/s sustained, no underrun |
-| WebSocket client (`/ws/voice`, RFC6455, auto-reconnect) | ✅ verified | plaintext `ws://` only — see [Limitations](#known-limitations) |
+| WebSocket client (`/ws/voice`, RFC6455, auto-reconnect) | ✅ verified | `ws://` and `wss://` (TLS 1.3, self-signed accepted, `USE_WSS` switch); the wss link awaits an on-device re-verification |
 | Streaming subtitles (typewriter, wrap, 80-line scroll) | ✅ verified |
 | ST7789 240×240 driver + Chinese bitmap font + partial redraw | ✅ verified |
 | SNTP clock / Wi-Fi bars in the status bar | ✅ verified |
 | Battery level (ADC2_CH6/GPIO17, sampled every 30 s) + charging mark | ✅ verified | ADC2 coexists with Wi-Fi on the S3; the percentage scale is not calibrated yet |
 | Volume buttons | ✅ live, ⬜ not persisted | NVS storage still missing |
-| `/ws/tts-stream` fallback, voice barge-in, TLS | ⬜ not implemented | |
+| `/ws/tts-stream` fallback, voice barge-in | ⬜ not implemented | |
 
 ## Hardware
 
@@ -79,7 +79,14 @@ crates.io as usual and `cargo build` fetches it automatically. Clone first:
 git clone --branch esp-hal-v1.2.0 --depth 1 https://github.com/esp-rs/esp-hal .deps/esp-hal
 ```
 
-Verified against tag `esp-hal-v1.2.0` (commit `dbd951f`). `.deps/` is git-ignored.
+Verified against tag `esp-hal-v1.2.0` (commit `dbd951f`). `.deps/esp-hal` is
+git-ignored.
+
+`.deps/embedded-tls` in the same directory is a **patched copy of embedded-tls**
+(copied from crates.io 0.19.0) that provides the `wss://` TLS 1.3 client; the
+cancellation-safety patches are described in its `PATCH-NOTES.md` and in
+[`docs/wss-改造方案.md`](docs/wss-改造方案.md). It is **committed to this repo**,
+no manual setup needed.
 
 ### 3. Private config
 
@@ -117,16 +124,19 @@ embedded builds.
 
 ### 5. Talk
 
-**Start the server in HTTP mode, not HTTPS/WSS.** If `main.py` finds both
-`cert.pem` and `key.pem` in the server's own directory, it hands them to uvicorn as
-`ssl_certfile`/`ssl_keyfile`, so the browser works while the firmware does not: this
-client only speaks plaintext `ws://`, and the TLS handshake fails on the first step,
-which shows up as `[Voice] 连接失败: Io` reconnecting forever. To run HTTP, move those
-two certificate files out of the server directory temporarily (anywhere is fine — the
-test is whether `<server-dir>/cert.pem` exists), then put them back. The server's own
-startup line `[MAIN] 检测到 HTTPS 证书，以 https://<本机IP>:7862 启动` is the tell; if
-it is absent, you are on HTTP. This constraint is Rust-only — the C++ build speaks
-`wss://` (self-signed, validation skipped) and joins an HTTPS-started server happily.
+**The server works with or without certificates — pick the matching `USE_WSS`
+switch** (`config_private.rs`):
+
+| `USE_WSS` | Transport | Server directory | Notes |
+|---|---|---|---|
+| `true` (default) | `wss://` (TLS 1.3, certificate validation skipped) | **keep** `cert.pem` + `key.pem` (HTTPS start) | same policy as the C++ build; stop shuffling the certs |
+| `false` | `ws://` (plaintext) | **remove** both certificate files (HTTP start) | debug only (packet capture, link checks) |
+
+The server's startup line `[MAIN] 检测到 HTTPS 证书，以 https://<本机IP>:7862 启动`
+is the tell; if it is absent, the server is on HTTP. When the two sides disagree the
+serial console shows `[Voice] 连接失败: ...` reconnecting forever (wss against an
+HTTP server prints `[Voice] TLS 握手失败: ...` first) — flip the switch or move the
+certificates.
 
 The firmware connects and starts listening on its own.
 
@@ -155,7 +165,7 @@ ntp_task             ── waits for an address, then SNTP
 |--------|----------------|
 | [`main.rs`](src/main.rs) | Bring-up, three-state machine, task wiring |
 | [`voice_client.rs`](src/voice_client.rs) | Message building, lenient JSON scanning, `RoundTracker` |
-| [`ws.rs`](src/ws.rs) | RFC6455 client over embassy-net, cancellation-safe |
+| [`ws.rs`](src/ws.rs) | RFC6455 client over embassy-net (`ws`/`wss`), cancellation-safe |
 | [`audio_input.rs`](src/audio_input.rs) | PDM capture, gain, stream-DMA recovery |
 | [`audio_output.rs`](src/audio_output.rs) | PSRAM ring, linear resampling, volume curve, tones |
 | [`display.rs`](src/display.rs) | Subtitle model: typewriter, wrapping, history, status |
@@ -204,6 +214,16 @@ before editing:
   `self` fields (`stage`, `hdr_have`, `payload_have`, `discard_left`,
   `tx_pending`/`tx_sent`, …) — keeping half a frame in a local would desynchronise
   the stream the moment it is cancelled.
+- **wss pushes that same constraint down into the TLS record layer.** The same
+  select structure drops TLS read/write futures too, and embedded-tls 0.19 is not
+  cancellation-safe out of the box, so this repo uses a patched copy at
+  [`.deps/embedded-tls`](.deps/embedded-tls): record headers and bodies resume from
+  a breakpoint, and a partially sent ciphertext record resumes byte-exactly
+  (motivation, change list and upgrade guide in its `PATCH-NOTES.md`; the design
+  walk-through is in [`docs/wss-改造方案.md`](docs/wss-改造方案.md)). One more
+  sizing rule applies: a single frame must stay far below the TLS write buffer's
+  plaintext block (4 KB class) to avoid the embedded-io-async `Write`
+  "lost return value on cancellation" ambiguity — see the header of `ws.rs`.
 - **The protocol parser is deliberately lenient** (a flat-object scanner) instead
   of a strict serde tagged enum, matching the probing style of ArduinoJson:
   unknown fields and unknown message types must not kill the connection.
@@ -280,7 +300,7 @@ two firmwares can be compared line by line.
 | No response to speech | `[麦克风] 峰值=` while talking | Should exceed 10000. Near 0 → PDM wiring or `MIC_GAIN_SHIFT`; repeated `[AudioIn] 连续无数据` → stream DMA underrun (driver restarts it) |
 | Stutter / hissy gaps in replies | Growth of `[AudioOut] 已输出` | Below ≈64 kB/s means the pump is starved; check `buffered()`, ring size, Wi-Fi signal |
 | Clock shows `--:--` | `[NTP] 对时成功` | Router blocks outbound UDP 123, or all `NTP_SERVERS` unreachable |
-| `[Voice] 连接失败: Io` forever | Whether the server came up as HTTPS, then the firewall | The client speaks plaintext `ws://`: with `cert.pem`+`key.pem` still sitting in the server directory it starts as WSS, so the handshake fails on step one (see [Talk](#5-talk) for the workaround) |
+| `[Voice] 连接失败: Io` forever | Any `[Voice] TLS 握手失败` line above it | ① `USE_WSS` does not match the server's certificate state (`true` against an HTTP server / `false` against an HTTPS server — see [Talk](#5-talk)); ② firewall blocking 7862; ③ the server is not running |
 
 A panic in **any** task takes the whole UI down: esp-rtos gives all embassy tasks
 one executor thread, and esp-backtrace's handler prints and then spins instead of
@@ -289,12 +309,10 @@ the crime scene** — read the tail, including any `panicked at ...`.
 
 ## Known limitations
 
-- **No TLS.** The client speaks `ws://` only, so the server has to run in HTTP
-  mode — see [Talk](#5-talk). The C++ build is the opposite: it uses `wss://` via
-  `beginSSL(host, port, path, nullptr, nullptr)`, i.e. neither CA nor fingerprint
-  is supplied, so a self-signed certificate is accepted without validation and an
-  HTTPS-started server works fine there. What the Rust side lacks is the TLS client
-  itself, not the decision to skip certificate checks.
+- **wss does not validate the server certificate** (`UnsecureProvider`: neither
+  the chain nor the hostname is checked — the same policy as the C++
+  `beginSSL(host, port, path, nullptr, nullptr)`). A LAN-only trade-off; pinning
+  the server's certificate (fingerprint/public key) is a possible follow-up.
 - **IPv4 literals only** for `SERVER_HOST`; no DNS client yet.
 - **Volume is not persisted** — the C++ build stores it in NVS
   (`Preferences`), the Rust side still needs an NVS binding.
@@ -318,6 +336,9 @@ the crime scene** — read the tail, including any `panicked at ...`.
 
 - [esp-hal](https://github.com/esp-rs/esp-hal) / [embassy](https://embassy.dev/)
   — the Rust embedded stack this port rides on
+- [embedded-tls](https://github.com/drogue-iot/embedded-tls) — the pure-Rust
+  `no_std` TLS 1.3 client that provides `wss://` (this repo uses a locally patched
+  copy, see [`.deps/embedded-tls`](.deps/embedded-tls))
 - [LovyanGFX](https://github.com/lovyan03/LovyanGFX) — the ST7789 panel setup and
   the `efont CN` glyph arrays under
   [`src/lgfx/Fonts/efont`](https://github.com/lovyan03/LovyanGFX/tree/master/src/lgfx/Fonts/efont),
