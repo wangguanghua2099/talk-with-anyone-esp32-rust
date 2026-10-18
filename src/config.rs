@@ -8,7 +8,7 @@ pub use crate::config_private::*;
 pub const WS_VOICE_PATH: &str = "/ws/voice";
 pub const WS_TTS_PATH: &str = "/ws/tts-stream";
 
-// ===== wss / TLS 记录层缓冲（embedded-tls；见 ws.rs 与 docs/wss-改造方案.md §4）=====
+// ===== wss / TLS 记录层缓冲（embedded-tls；记录层细节与推导见 ws.rs 文件头）=====
 /// TLS 记录读缓冲：单条 TLS 记录最大 16384+256=16640 字节；小于该值
 /// embedded-tls 只会内部告警，但超大记录会被拒 → 给足。
 pub const TLS_READ_BUF: usize = 16640;

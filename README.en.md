@@ -84,9 +84,8 @@ git-ignored.
 
 `.deps/embedded-tls` in the same directory is a **patched copy of embedded-tls**
 (copied from crates.io 0.19.0) that provides the `wss://` TLS 1.3 client; the
-cancellation-safety patches are described in its `PATCH-NOTES.md` and in
-[`docs/wss-改造方案.md`](docs/wss-改造方案.md). It is **committed to this repo**,
-no manual setup needed.
+cancellation-safety patches are described in its `PATCH-NOTES.md`. It is
+**committed to this repo**, no manual setup needed.
 
 ### 3. Private config
 
@@ -219,8 +218,7 @@ before editing:
   cancellation-safe out of the box, so this repo uses a patched copy at
   [`.deps/embedded-tls`](.deps/embedded-tls): record headers and bodies resume from
   a breakpoint, and a partially sent ciphertext record resumes byte-exactly
-  (motivation, change list and upgrade guide in its `PATCH-NOTES.md`; the design
-  walk-through is in [`docs/wss-改造方案.md`](docs/wss-改造方案.md)). One more
+  (motivation, change list and upgrade guide in its `PATCH-NOTES.md`). One more
   sizing rule applies: a single frame must stay far below the TLS write buffer's
   plaintext block (4 KB class) to avoid the embedded-io-async `Write`
   "lost return value on cancellation" ambiguity — see the header of `ws.rs`.

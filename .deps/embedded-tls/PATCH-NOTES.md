@@ -1,7 +1,7 @@
 # PATCH-NOTES：本目录是打过补丁的 embedded-tls 0.19.0
 
 > 来源：crates.io `embedded-tls 0.19.0`（原始拷贝，仅做下述改动）。
-> 补丁动机与完整设计见仓库 `docs/wss-改造方案.md`（esp32 小音箱 Rust 版 wss 改造）。
+> 用途：esp32 小音箱 Rust 固件的 wss 支持；补丁动机见下文。
 > **升级 embedded-tls 时：逐条对照本文，重新套用补丁。**
 
 ## 为什么需要补丁

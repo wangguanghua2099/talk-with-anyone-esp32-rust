@@ -72,8 +72,8 @@ git clone --branch esp-hal-v1.2.0 --depth 1 https://github.com/esp-rs/esp-hal .d
 验证基线：tag `esp-hal-v1.2.0`（commit `dbd951f`）。`.deps/esp-hal` 已被 gitignore。
 
 同一目录下的 `.deps/embedded-tls` 是自 crates.io 0.19.0 复制的 **embedded-tls 补丁版**
-（wss 支持的 TLS 1.3 客户端；取消安全补丁的动机与改动清单见其 `PATCH-NOTES.md` 与
-[`docs/wss-改造方案.md`](docs/wss-改造方案.md)），**随仓库入库**，无需手工准备。
+（wss 支持的 TLS 1.3 客户端；取消安全补丁的动机与改动清单见其 `PATCH-NOTES.md`），
+**随仓库入库**，无需手工准备。
 
 ### 3. 私密配置
 
@@ -187,8 +187,7 @@ ntp_task             ── 先等 IP，再做 SNTP
 - **wss 把这个约束下沉到了 TLS 记录层。** 同一套 select 结构同样会丢弃 TLS 读写
   future，而 embedded-tls 0.19 原生不具备取消安全，因此本仓库使用它的补丁拷贝
   [`.deps/embedded-tls`](.deps/embedded-tls)：读记录头/记录体断点续读、密文记录
-  断点续发（动机、改动清单与升级指引见其 `PATCH-NOTES.md`，设计推演见
-  [`docs/wss-改造方案.md`](docs/wss-改造方案.md)）。另有一条尺寸约束：单帧必须
+  断点续发（动机、改动清单与升级指引见其 `PATCH-NOTES.md`）。另有一条尺寸约束：单帧必须
   远小于 TLS 写缓冲的明文块（4 KB 量级），否则会踩到 embedded-io-async `Write`
   在"取消丢返回值"上的歧义——细节写在 `ws.rs` 文件头。
 - **协议解析刻意做得宽容**（平坦对象扫描器）而不是 serde 严格 tagged 枚举，与 ArduinoJson
