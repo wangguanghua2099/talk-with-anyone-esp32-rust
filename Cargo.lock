@@ -805,6 +805,8 @@ dependencies = [
 [[package]]
 name = "embedded-ws"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "830ca5bc79dab101beaf1a267af4b9d56073396e6952d36f4b1bd6feecfcb63a"
 dependencies = [
  "embedded-io-async 0.7.0",
 ]

@@ -31,9 +31,10 @@ embedded-tls = { path = ".deps/embedded-tls", default-features = false }
 # esp-hal 的 `unstable` 特性已为 Rng 实现同版本 RngCore，ws.rs 里补一个 CryptoRng 适配器。
 rand_core = "0.6"
 # WS 客户端：从本工程提炼的独立 crate（取消安全帧状态机 + 升级握手 + SHA-1/accept
-# 校验；见 ../embedded-ws）。本工程只保留 ws.rs 适配层（Transport 枚举 / TrngRng /
-# 静态缓冲收回）。wss 的 TLS 记录层仍用上面的 .deps/embedded-tls。
-embedded-ws = { path = "../embedded-ws" }
+# 校验）。已发布 crates.io 0.1.0（源码仓库 https://github.com/wangguanghua2099/embedded-ws）。
+# 本工程只保留 ws.rs 适配层（Transport 枚举 / TrngRng / 静态缓冲收回）；
+# wss 的 TLS 记录层仍用上面的 .deps/embedded-tls。
+embedded-ws = "0.1"
 # embedded-ws 的 Transport 契约要在实现侧命名这些 traits
 # （与 embassy-net / embedded-tls / embedded-ws 同一 0.7 线）。
 embedded-io-async = "0.7"
