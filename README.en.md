@@ -164,7 +164,7 @@ ntp_task             ── waits for an address, then SNTP
 |--------|----------------|
 | [`main.rs`](src/main.rs) | Bring-up, three-state machine, task wiring |
 | [`voice_client.rs`](src/voice_client.rs) | Message building, lenient JSON scanning, `RoundTracker` |
-| [`ws.rs`](src/ws.rs) | RFC6455 client over embassy-net (`ws`/`wss`), cancellation-safe |
+| [`ws.rs`](src/ws.rs) | RFC6455 client adapter (`ws`/`wss`), cancellation-safe; frame state machine and handshake come from the `embedded-ws` crate |
 | [`audio_input.rs`](src/audio_input.rs) | PDM capture, gain, stream-DMA recovery |
 | [`audio_output.rs`](src/audio_output.rs) | PSRAM ring, linear resampling, volume curve, tones |
 | [`display.rs`](src/display.rs) | Subtitle model: typewriter, wrapping, history, status |
@@ -212,7 +212,9 @@ before editing:
   it can be dropped at any await point. Every piece of cross-await state lives in
   `self` fields (`stage`, `hdr_have`, `payload_have`, `discard_left`,
   `tx_pending`/`tx_sent`, …) — keeping half a frame in a local would desynchronise
-  the stream the moment it is cancelled.
+  the stream the moment it is cancelled. This state machine now lives in the
+  standalone `embedded-ws` crate (v0.1, extracted from this project; the project is
+  its first dogfood user); the contract is unchanged.
 - **wss pushes that same constraint down into the TLS record layer.** The same
   select structure drops TLS read/write futures too, and embedded-tls 0.19 is not
   cancellation-safe out of the box, so this repo uses a patched copy at
@@ -221,7 +223,8 @@ before editing:
   (motivation, change list and upgrade guide in its `PATCH-NOTES.md`). One more
   sizing rule applies: a single frame must stay far below the TLS write buffer's
   plaintext block (4 KB class) to avoid the embedded-io-async `Write`
-  "lost return value on cancellation" ambiguity — see the header of `ws.rs`.
+  "lost return value on cancellation" ambiguity — see the header of `ws.rs` and
+  the `embedded-ws` crate docs.
 - **The protocol parser is deliberately lenient** (a flat-object scanner) instead
   of a strict serde tagged enum, matching the probing style of ArduinoJson:
   unknown fields and unknown message types must not kill the connection.

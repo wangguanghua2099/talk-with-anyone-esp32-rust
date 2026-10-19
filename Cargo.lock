@@ -803,6 +803,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-ws"
+version = "0.1.0"
+dependencies = [
+ "embedded-io-async 0.7.0",
+]
+
+[[package]]
 name = "enumset"
 version = "1.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2104,7 +2111,9 @@ dependencies = [
  "embassy-net",
  "embassy-sync 0.8.0",
  "embassy-time",
+ "embedded-io-async 0.7.0",
  "embedded-tls",
+ "embedded-ws",
  "esp-alloc",
  "esp-backtrace",
  "esp-bootloader-esp-idf",

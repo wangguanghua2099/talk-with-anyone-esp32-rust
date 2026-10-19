@@ -30,6 +30,13 @@ embedded-tls = { path = ".deps/embedded-tls", default-features = false }
 # embedded-tls 握手需要 rand_core 0.6 的 RngCore/CryptoRng 取随机数；
 # esp-hal 的 `unstable` 特性已为 Rng 实现同版本 RngCore，ws.rs 里补一个 CryptoRng 适配器。
 rand_core = "0.6"
+# WS 客户端：从本工程提炼的独立 crate（取消安全帧状态机 + 升级握手 + SHA-1/accept
+# 校验；见 ../embedded-ws）。本工程只保留 ws.rs 适配层（Transport 枚举 / TrngRng /
+# 静态缓冲收回）。wss 的 TLS 记录层仍用上面的 .deps/embedded-tls。
+embedded-ws = { path = "../embedded-ws" }
+# embedded-ws 的 Transport 契约要在实现侧命名这些 traits
+# （与 embassy-net / embedded-tls / embedded-ws 同一 0.7 线）。
+embedded-io-async = "0.7"
 # u8g2 / LovyanGFX 点阵字库：解码器 + 捆绑数据（原 src/font.rs 抽成的 crate 家族）。
 # default-features = false：关掉 `gen`（C 字面量解析 + blob 抽取，会拉进 alloc），
 # 设备侧不引入 alloc。efont-cn-14 特性经主 crate 0.2 的 fonts 模块桥接独立的纯数据包

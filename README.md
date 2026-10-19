@@ -146,7 +146,7 @@ ntp_task             ── 先等 IP，再做 SNTP
 |------|------|
 | [`main.rs`](src/main.rs) | 硬件 bring-up、三态状态机、任务装配 |
 | [`voice_client.rs`](src/voice_client.rs) | 报文构造、宽容 JSON 扫描、`RoundTracker` 轮次守卫 |
-| [`ws.rs`](src/ws.rs) | embassy-net 之上的 RFC6455 客户端（`ws`/`wss`），取消安全 |
+| [`ws.rs`](src/ws.rs) | RFC6455 客户端适配层（`ws`/`wss`），取消安全；帧状态机与握手来自 `embedded-ws` crate |
 | [`audio_input.rs`](src/audio_input.rs) | PDM 采集、增益、流式 DMA 恢复 |
 | [`audio_output.rs`](src/audio_output.rs) | PSRAM 环形缓冲、线性插值重采样、音量曲线、提示音 |
 | [`display.rs`](src/display.rs) | 字幕数据模型：打字机、折行、历史、状态 |
@@ -184,12 +184,14 @@ ntp_task             ── 先等 IP，再做 SNTP
   按键与麦克风上行的节拍，因此它可能在任意 await 点被整体丢弃。所有跨 await 的中间状态
   都落在 `self` 字段里（`stage`、`hdr_have`、`payload_have`、`discard_left`、
   `tx_pending`/`tx_sent`…）—— 半截帧放在局部变量里，一被取消就丢字节、流就失步。
+  这套状态机已提炼为独立的 `embedded-ws` crate（v0.1，本工程为其首个 dogfood
+  用户），契约不变。
 - **wss 把这个约束下沉到了 TLS 记录层。** 同一套 select 结构同样会丢弃 TLS 读写
   future，而 embedded-tls 0.19 原生不具备取消安全，因此本仓库使用它的补丁拷贝
   [`.deps/embedded-tls`](.deps/embedded-tls)：读记录头/记录体断点续读、密文记录
   断点续发（动机、改动清单与升级指引见其 `PATCH-NOTES.md`）。另有一条尺寸约束：单帧必须
   远小于 TLS 写缓冲的明文块（4 KB 量级），否则会踩到 embedded-io-async `Write`
-  在"取消丢返回值"上的歧义——细节写在 `ws.rs` 文件头。
+  在"取消丢返回值"上的歧义——细节写在 `ws.rs` 文件头与 `embedded-ws` crate 文档。
 - **协议解析刻意做得宽容**（平坦对象扫描器）而不是 serde 严格 tagged 枚举，与 ArduinoJson
   的探测式语义一致：未知字段、未知消息类型都不能让连接语义崩掉。
 - **`RoundTracker` 对齐 C++ 的轮次守卫**：打断后迟到的内容整条丢弃；新的 `asr.result`
